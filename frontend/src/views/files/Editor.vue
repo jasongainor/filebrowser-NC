@@ -32,7 +32,7 @@
       />
     </header-bar>
 
-    <!-- preview container -->
+    <!-- loading spinner -->
     <div class="loading delayed" v-if="layoutStore.loading">
       <div class="spinner">
         <div class="bounce1"></div>
@@ -40,24 +40,46 @@
         <div class="bounce3"></div>
       </div>
     </div>
+
     <template v-else>
       <Breadcrumbs base="/files" noLink />
 
+      <!-- markdown preview -->
       <div
         v-show="isPreview && isMarkdownFile"
         id="preview-container"
         class="md_preview"
         v-html="previewContent"
       ></div>
-      <form v-show="!isPreview || !isMarkdownFile" id="editor"></form>
+
+      <!-- editor + (optional) 3D viewer -->
+      <div
+        v-show="!isPreview || !isMarkdownFile"
+        class="editor-layout"
+      >
+        <!-- Ace editor -->
+        <div class="editor-pane" id="editor"></div>
+
+        <!-- 3D G-code viewer for NC/TAP/GCODE/CNC -->
+        <div v-if="isGcodeFile" class="viewer-pane">
+          <GCode3DViewer
+            :gcode="currentGcode"
+            :cursor-line="cursorLine"
+            @select-line="handleViewerLineSelect"
+          />
+        </div>
+      </div>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
+import "@/ace-gcode.js"; // your custom G-code mode
+
 import { files as api } from "@/api";
 import buttons from "@/utils/buttons";
 import url from "@/utils/url";
+
 import ace, { Ace, version as ace_version } from "ace-builds";
 import "ace-builds/src-noconflict/ext-language_tools";
 import modelist from "ace-builds/src-noconflict/ext-modelist";
@@ -71,9 +93,18 @@ import { useFileStore } from "@/stores/file";
 import { useLayoutStore } from "@/stores/layout";
 import { getEditorTheme } from "@/utils/theme";
 import { marked } from "marked";
-import { inject, onBeforeUnmount, onMounted, ref, watchEffect } from "vue";
+import {
+  inject,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watchEffect,
+  computed,
+} from "vue";
 import { useI18n } from "vue-i18n";
 import { onBeforeRouteUpdate, useRoute, useRouter } from "vue-router";
+
+import GCode3DViewer from "@/components/GCode3DViewer.vue";
 
 const $showError = inject<IToastError>("$showError")!;
 
@@ -87,13 +118,33 @@ const route = useRoute();
 const router = useRouter();
 
 const editor = ref<Ace.Editor | null>(null);
+const cursorLine = ref<number | null>(null);
 const fontSize = ref(parseInt(localStorage.getItem("editorFontSize") || "14"));
 
 const isPreview = ref(false);
 const previewContent = ref("");
-const isMarkdownFile =
-  fileStore.req?.name.endsWith(".md") ||
-  fileStore.req?.name.endsWith(".markdown");
+
+// markdown check
+const isMarkdownFile = computed(() => {
+  const name = fileStore.req?.name || "";
+  return name.endsWith(".md") || name.endsWith(".markdown");
+});
+
+// which files get G-code treatment
+const isGcodeFile = computed(() => {
+  const name = (fileStore.req?.name || "").toLowerCase();
+  return (
+    name.endsWith(".nc") ||
+    name.endsWith(".tap") ||
+    name.endsWith(".gcode") ||
+    name.endsWith(".cnc")
+  );
+});
+
+// live G-code text for viewer (editor content if edited, else original file)
+const currentGcode = computed(() => {
+  return editor.value?.getValue() ?? (fileStore.req?.content || "");
+});
 
 onMounted(() => {
   window.addEventListener("keydown", keyEvent);
@@ -101,8 +152,9 @@ onMounted(() => {
 
   const fileContent = fileStore.req?.content || "";
 
+  // markdown preview updates
   watchEffect(async () => {
-    if (isMarkdownFile && isPreview.value) {
+    if (isMarkdownFile.value && isPreview.value) {
       const new_value = editor.value?.getValue() || "";
       try {
         previewContent.value = DOMPurify.sanitize(await marked(new_value));
@@ -123,7 +175,20 @@ onMounted(() => {
     showPrintMargin: false,
     readOnly: fileStore.req?.type === "textImmutable",
     theme: getEditorTheme(authStore.user?.aceEditorTheme ?? ""),
-    mode: modelist.getModeForPath(fileStore.req!.name).mode,
+    mode: (() => {
+      const name = (fileStore.req?.name || "").toLowerCase();
+
+      if (
+        name.endsWith(".nc") ||
+        name.endsWith(".tap") ||
+        name.endsWith(".gcode") ||
+        name.endsWith(".cnc")
+      ) {
+        return "ace/mode/gcode";
+      }
+
+      return modelist.getModeForPath(fileStore.req!.name).mode;
+    })(),
     wrap: true,
     enableBasicAutocompletion: true,
     enableLiveAutocompletion: true,
@@ -132,6 +197,13 @@ onMounted(() => {
 
   editor.value.setFontSize(fontSize.value);
   editor.value.focus();
+
+  // track cursor line for 3D highlight
+  const session = editor.value.getSession();
+  session.selection.on("changeCursor", () => {
+    const pos = editor.value!.getCursorPosition();
+    cursorLine.value = pos.row;
+  });
 });
 
 onBeforeUnmount(() => {
@@ -143,7 +215,6 @@ onBeforeUnmount(() => {
 onBeforeRouteUpdate((to, from, next) => {
   if (editor.value?.session.getUndoManager().isClean()) {
     next();
-
     return;
   }
 
@@ -180,8 +251,7 @@ const keyEvent = (event: KeyboardEvent) => {
 const handlePageChange = (event: BeforeUnloadEvent) => {
   if (!editor.value?.session.getUndoManager().isClean()) {
     event.preventDefault();
-    // returnValue is now depecrated, though keeping in for legacy browser support
-    // https://developer.mozilla.org/en-US/docs/Web/API/BeforeUnloadEvent/returnValue
+    // returnValue is deprecated but kept for legacy browsers
     event.returnValue = true;
   }
 };
@@ -241,11 +311,89 @@ const finishClose = () => {
 const preview = () => {
   isPreview.value = !isPreview.value;
 };
+
+// when user clicks in 3D, jump Ace to that line
+const handleViewerLineSelect = (lineIndex: number) => {
+  if (!editor.value) return;
+  const session = editor.value.getSession();
+  const maxRow = session.getLength() - 1;
+  const row = Math.max(0, Math.min(lineIndex, maxRow));
+
+  editor.value.gotoLine(row + 1, 0, true);
+  editor.value.centerSelection();
+};
 </script>
 
 <style scoped>
 .editor-font-size {
   margin: 0 0.5em;
   color: var(--fg);
+}
+</style>
+
+<style>
+/* G-code syntax colors */
+
+/* Comments */
+.ace_comment,
+.ace_gcode.ace_comment {
+  color: #4b754b !important;
+}
+
+/* N codes */
+.ace_gcode.ace_block,
+.ace_block {
+  color: #ffffff !important;
+}
+
+/* Gxx (purple) */
+.ace_gcode.ace_gword {
+  color: #c586c0 !important;
+}
+
+/* X / I (orange) */
+.ace_gcode.ace_xparam {
+  color: #ce9178 !important;
+}
+
+/* Y / J / A (green-ish) */
+.ace_gcode.ace_yparam {
+  color: #4ec9b0 !important;
+}
+
+/* Z / K (blue) */
+.ace_gcode.ace_zparam {
+  color: #569cd6 !important;
+}
+
+/* F / S / H / D / T / HCC (teal) */
+.ace_gcode.ace_feedspeed {
+  color: #4ec9b0 !important;
+}
+
+/* M codes (yellow) */
+.ace_gcode.ace_mcode {
+  color: #dcdcaa !important;
+}
+
+/* P subprograms (light blue) */
+.ace_gcode.ace_subprog {
+  color: #9cdcfe !important;
+}
+
+/* Layout for editor + viewer */
+.editor-layout {
+  display: flex;
+  height: 100%;
+}
+
+.editor-pane {
+  flex: 1 1 50%;
+}
+
+.viewer-pane {
+  flex: 1 1 50%;
+  min-width: 0;
+  border-left: 1px solid var(--border-color, #333);
 }
 </style>

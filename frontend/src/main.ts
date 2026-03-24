@@ -47,7 +47,7 @@ app.use(router);
 app.mixin({
   mounted() {
     // expose vue instance to components
-    this.$el.__vue__ = this;
+    (this as any).$el.__vue__ = this;
   },
 });
 
@@ -94,7 +94,6 @@ app.provide("$showError", (error: Error | string, displayReport = true) => {
       props: {
         message: (error as Error).message || error,
         isReport: !disableExternal && displayReport,
-        // TODO: could you add this to the component itself?
         reportText: i18n.global.t("buttons.reportIssue"),
       },
     },
