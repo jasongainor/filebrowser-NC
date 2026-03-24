@@ -63,7 +63,7 @@
         <!-- 3D G-code viewer for NC/TAP/GCODE/CNC -->
         <div v-if="isGcodeFile" class="viewer-pane">
           <GCode3DViewer
-            :gcode="currentGcode"
+            :gcode="debouncedGcode"
             :cursor-line="cursorLine"
             @select-line="handleViewerLineSelect"
           />
@@ -74,7 +74,7 @@
 </template>
 
 <script setup lang="ts">
-import "@/ace-gcode.js"; // your custom G-code mode
+import "@/ace-gcode.js";
 
 import { files as api } from "@/api";
 import buttons from "@/utils/buttons";
@@ -106,6 +106,15 @@ import { onBeforeRouteUpdate, useRoute, useRouter } from "vue-router";
 
 import GCode3DViewer from "@/components/GCode3DViewer.vue";
 
+// ── debounce helper (avoids lodash dependency) ──────────────────────────────
+function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return ((...args: any[]) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), delay);
+  }) as T;
+}
+
 const $showError = inject<IToastError>("$showError")!;
 
 const fileStore = useFileStore();
@@ -124,13 +133,21 @@ const fontSize = ref(parseInt(localStorage.getItem("editorFontSize") || "14"));
 const isPreview = ref(false);
 const previewContent = ref("");
 
-// markdown check
+// Debounced gcode string — only updates 600ms after the user stops typing.
+// This is what gets passed to GCode3DViewer to prevent hammering the parser
+// and Three.js geometry rebuild on every keystroke.
+const debouncedGcode = ref<string>(fileStore.req?.content || "");
+
+const updateDebouncedGcode = debounce((val: string) => {
+  debouncedGcode.value = val;
+}, 600);
+
+// ── file type helpers ────────────────────────────────────────────────────────
 const isMarkdownFile = computed(() => {
   const name = fileStore.req?.name || "";
   return name.endsWith(".md") || name.endsWith(".markdown");
 });
 
-// which files get G-code treatment
 const isGcodeFile = computed(() => {
   const name = (fileStore.req?.name || "").toLowerCase();
   return (
@@ -141,9 +158,18 @@ const isGcodeFile = computed(() => {
   );
 });
 
-// live G-code text for viewer (editor content if edited, else original file)
-const currentGcode = computed(() => {
-  return editor.value?.getValue() ?? (fileStore.req?.content || "");
+// ── lifecycle ────────────────────────────────────────────────────────────────
+// markdown preview — at setup level so Vue manages its lifecycle correctly
+watchEffect(async () => {
+  if (isMarkdownFile.value && isPreview.value) {
+    const new_value = editor.value?.getValue() || "";
+    try {
+      previewContent.value = DOMPurify.sanitize(await marked(new_value));
+    } catch (error) {
+      console.error("Failed to convert content to HTML:", error);
+      previewContent.value = "";
+    }
+  }
 });
 
 onMounted(() => {
@@ -152,18 +178,8 @@ onMounted(() => {
 
   const fileContent = fileStore.req?.content || "";
 
-  // markdown preview updates
-  watchEffect(async () => {
-    if (isMarkdownFile.value && isPreview.value) {
-      const new_value = editor.value?.getValue() || "";
-      try {
-        previewContent.value = DOMPurify.sanitize(await marked(new_value));
-      } catch (error) {
-        console.error("Failed to convert content to HTML:", error);
-        previewContent.value = "";
-      }
-    }
-  });
+  // seed the debounced value immediately so the viewer has content on first render
+  debouncedGcode.value = fileContent;
 
   ace.config.set(
     "basePath",
@@ -175,20 +191,9 @@ onMounted(() => {
     showPrintMargin: false,
     readOnly: fileStore.req?.type === "textImmutable",
     theme: getEditorTheme(authStore.user?.aceEditorTheme ?? ""),
-    mode: (() => {
-      const name = (fileStore.req?.name || "").toLowerCase();
-
-      if (
-        name.endsWith(".nc") ||
-        name.endsWith(".tap") ||
-        name.endsWith(".gcode") ||
-        name.endsWith(".cnc")
-      ) {
-        return "ace/mode/gcode";
-      }
-
-      return modelist.getModeForPath(fileStore.req!.name).mode;
-    })(),
+    mode: isGcodeFile.value
+      ? "ace/mode/gcode"
+      : modelist.getModeForPath(fileStore.req?.name ?? "").mode,
     wrap: true,
     enableBasicAutocompletion: true,
     enableLiveAutocompletion: true,
@@ -198,11 +203,18 @@ onMounted(() => {
   editor.value.setFontSize(fontSize.value);
   editor.value.focus();
 
-  // track cursor line for 3D highlight
-  const session = editor.value.getSession();
-  session.selection.on("changeCursor", () => {
+  // track cursor line for 3D sphere highlight
+  editor.value.getSession().selection.on("changeCursor", () => {
     const pos = editor.value!.getCursorPosition();
     cursorLine.value = pos.row;
+  });
+
+  // fire debounced gcode update on every edit — viewer only re-parses after
+  // the user pauses typing for 600ms
+  editor.value.session.on("change", () => {
+    if (isGcodeFile.value) {
+      updateDebouncedGcode(editor.value!.getValue());
+    }
   });
 });
 
@@ -231,19 +243,13 @@ onBeforeRouteUpdate((to, from, next) => {
   });
 });
 
+// ── keyboard & page guards ───────────────────────────────────────────────────
 const keyEvent = (event: KeyboardEvent) => {
   if (event.code === "Escape") {
     close();
   }
-
-  if (!event.ctrlKey && !event.metaKey) {
-    return;
-  }
-
-  if (event.key !== "s") {
-    return;
-  }
-
+  if (!event.ctrlKey && !event.metaKey) return;
+  if (event.key !== "s") return;
   event.preventDefault();
   save();
 };
@@ -251,15 +257,14 @@ const keyEvent = (event: KeyboardEvent) => {
 const handlePageChange = (event: BeforeUnloadEvent) => {
   if (!editor.value?.session.getUndoManager().isClean()) {
     event.preventDefault();
-    // returnValue is deprecated but kept for legacy browsers
     event.returnValue = true;
   }
 };
 
+// ── actions ──────────────────────────────────────────────────────────────────
 const save = async () => {
   const button = "save";
   buttons.loading("save");
-
   try {
     await api.put(route.path, editor.value?.getValue());
     editor.value?.session.getUndoManager().markClean();
@@ -312,13 +317,12 @@ const preview = () => {
   isPreview.value = !isPreview.value;
 };
 
-// when user clicks in 3D, jump Ace to that line
+// when user clicks in 3D viewer, jump Ace editor to that line
 const handleViewerLineSelect = (lineIndex: number) => {
   if (!editor.value) return;
   const session = editor.value.getSession();
   const maxRow = session.getLength() - 1;
   const row = Math.max(0, Math.min(lineIndex, maxRow));
-
   editor.value.gotoLine(row + 1, 0, true);
   editor.value.centerSelection();
 };
@@ -332,63 +336,98 @@ const handleViewerLineSelect = (lineIndex: number) => {
 </style>
 
 <style>
-/* G-code syntax colors */
+/*
+ * G-code syntax highlight colors for ace-gcode.js
+ *
+ * Replace the <style> (non-scoped) block in Editor.vue with this.
+ *
+ * Design rules:
+ *   - N-codes (block numbers) use `color: inherit` — they adapt to whatever
+ *     Ace theme is active, so they're readable in both light and dark mode.
+ *   - All other tokens use !important to beat Ace theme specificity.
+ *   - Bare numbers use opacity so they recede without a hardcoded color.
+ */
 
-/* Comments */
-.ace_comment,
+/* ── Comments ──────────────────────────────────────────────────────────────── */
 .ace_gcode.ace_comment {
   color: #4b754b !important;
+  font-style: italic;
 }
 
-/* N codes */
-.ace_gcode.ace_block,
-.ace_block {
-  color: #ffffff !important;
+/* ── Block numbers (N-codes) ───────────────────────────────────────────────── */
+/* inherit = uses the active Ace theme's foreground color.                      */
+/* Works correctly in light AND dark themes — no more white-on-white.           */
+.ace_gcode.ace_block {
+  color: inherit;
+  opacity: 0.55;   /* dimmed so N-codes recede behind G/M words visually */
 }
 
-/* Gxx (purple) */
+/* ── Program markers (% and Oxxxx) ────────────────────────────────────────── */
+.ace_gcode.ace_marker {
+  color: #e06c75 !important;  /* red — stands out as structural delimiters */
+  font-weight: bold;
+}
+
+/* ── G-words ───────────────────────────────────────────────────────────────── */
 .ace_gcode.ace_gword {
-  color: #c586c0 !important;
+  color: #c586c0 !important;  /* purple */
+  font-weight: bold;
 }
 
-/* X / I (orange) */
+/* ── M-codes ───────────────────────────────────────────────────────────────── */
+.ace_gcode.ace_mcode {
+  color: #dcdcaa !important;  /* yellow */
+  font-weight: bold;
+}
+
+/* ── X / I / A  (orange) ───────────────────────────────────────────────────── */
 .ace_gcode.ace_xparam {
   color: #ce9178 !important;
 }
 
-/* Y / J / A (green-ish) */
+/* ── Y / J  (teal) ─────────────────────────────────────────────────────────── */
 .ace_gcode.ace_yparam {
   color: #4ec9b0 !important;
 }
 
-/* Z / K (blue) */
+/* ── Z / K / B  (blue) ─────────────────────────────────────────────────────── */
 .ace_gcode.ace_zparam {
   color: #569cd6 !important;
 }
 
-/* F / S / H / D / T / HCC (teal) */
+/* ── F / S / H / D / T  (lighter teal) ────────────────────────────────────── */
 .ace_gcode.ace_feedspeed {
-  color: #4ec9b0 !important;
+  color: #9cdcfe !important;
 }
 
-/* M codes (yellow) */
-.ace_gcode.ace_mcode {
-  color: #dcdcaa !important;
-}
-
-/* P subprograms (light blue) */
+/* ── P subprogram numbers (light blue) ─────────────────────────────────────── */
 .ace_gcode.ace_subprog {
   color: #9cdcfe !important;
 }
 
-/* Layout for editor + viewer */
+/* ── Bare numeric fallback ──────────────────────────────────────────────────── */
+/* opacity-only — inherits theme color so it works in light and dark mode       */
+.ace_constant.ace_numeric {
+  opacity: 0.5;
+}
+
+/* ── Layout ─────────────────────────────────────────────────────────────────── */
+
+#editor-container {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 52px); /* 52px = header-bar height */
+}
+
 .editor-layout {
   display: flex;
-  height: 100%;
+  flex: 1;
+  min-height: 0; /* lets flex children shrink below content size */
 }
 
 .editor-pane {
   flex: 1 1 50%;
+  min-width: 0;
 }
 
 .viewer-pane {
