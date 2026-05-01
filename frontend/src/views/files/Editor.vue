@@ -42,7 +42,30 @@
     </div>
 
     <template v-else>
-      <Breadcrumbs base="/files" noLink />
+      <div class="editor-header">
+        <Breadcrumbs base="/files" noLink />
+
+        <div>
+          <button
+            :disabled="isSelectionEmpty"
+            @click="executeEditorCommand('copy')"
+          >
+            <span><i class="material-icons">content_copy</i></span>
+          </button>
+          <button
+            :disabled="isSelectionEmpty"
+            @click="executeEditorCommand('cut')"
+          >
+            <span><i class="material-icons">content_cut</i></span>
+          </button>
+          <button @click="executeEditorCommand('paste')">
+            <span><i class="material-icons">content_paste</i></span>
+          </button>
+          <button @click="executeEditorCommand('openCommandPalette')">
+            <span><i class="material-icons">more_vert</i></span>
+          </button>
+        </div>
+      </div>
 
       <!-- markdown preview -->
       <div
@@ -53,14 +76,9 @@
       ></div>
 
       <!-- editor + (optional) 3D viewer -->
-      <div
-        v-show="!isPreview || !isMarkdownFile"
-        class="editor-layout"
-      >
-        <!-- Ace editor -->
+      <div v-show="!isPreview || !isMarkdownFile" class="editor-layout">
         <div class="editor-pane" id="editor"></div>
 
-        <!-- 3D G-code viewer for NC/TAP/GCODE/CNC -->
         <div v-if="isGcodeFile" class="viewer-pane">
           <GCode3DViewer
             :gcode="debouncedGcode"
@@ -93,20 +111,22 @@ import { useFileStore } from "@/stores/file";
 import { useLayoutStore } from "@/stores/layout";
 import { getEditorTheme } from "@/utils/theme";
 import { marked } from "marked";
+import markedKatex from "marked-katex-extension";
 import {
+  computed,
   inject,
   onBeforeUnmount,
   onMounted,
   ref,
   watchEffect,
-  computed,
 } from "vue";
 import { useI18n } from "vue-i18n";
 import { onBeforeRouteUpdate, useRoute, useRouter } from "vue-router";
+import { read, copy } from "@/utils/clipboard";
 
 import GCode3DViewer from "@/components/GCode3DViewer.vue";
 
-// ── debounce helper (avoids lodash dependency) ──────────────────────────────
+// debounce helper — avoids pulling in lodash for one call site
 function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
   let timer: ReturnType<typeof setTimeout> | null = null;
   return ((...args: any[]) => {
@@ -133,23 +153,13 @@ const fontSize = ref(parseInt(localStorage.getItem("editorFontSize") || "14"));
 const isPreview = ref(false);
 const previewContent = ref("");
 
-// Debounced gcode string — only updates 600ms after the user stops typing.
-// This is what gets passed to GCode3DViewer to prevent hammering the parser
-// and Three.js geometry rebuild on every keystroke.
-const debouncedGcode = ref<string>(fileStore.req?.content || "");
-
-const updateDebouncedGcode = debounce((val: string) => {
-  debouncedGcode.value = val;
-}, 600);
-
-// ── file type helpers ────────────────────────────────────────────────────────
 const isMarkdownFile = computed(() => {
-  const name = fileStore.req?.name || "";
+  const name = fileStore.req?.name ?? "";
   return name.endsWith(".md") || name.endsWith(".markdown");
 });
 
 const isGcodeFile = computed(() => {
-  const name = (fileStore.req?.name || "").toLowerCase();
+  const name = (fileStore.req?.name ?? "").toLowerCase();
   return (
     name.endsWith(".nc") ||
     name.endsWith(".tap") ||
@@ -158,8 +168,48 @@ const isGcodeFile = computed(() => {
   );
 });
 
-// ── lifecycle ────────────────────────────────────────────────────────────────
-// markdown preview — at setup level so Vue manages its lifecycle correctly
+const katexOptions = {
+  output: "mathml" as const,
+  throwOnError: false,
+};
+marked.use(markedKatex(katexOptions));
+
+const isSelectionEmpty = ref(true);
+
+// Debounced gcode — only updates after the user stops typing for 600ms,
+// preventing the parser + Three.js geometry rebuild from running on every keystroke.
+const debouncedGcode = ref<string>(fileStore.req?.content || "");
+const updateDebouncedGcode = debounce((val: string) => {
+  debouncedGcode.value = val;
+}, 600);
+
+const executeEditorCommand = (name: string) => {
+  if (name == "paste") {
+    read()
+      .then((data) => {
+        editor.value?.execCommand("paste", {
+          text: data,
+        });
+      })
+      .catch((e) => {
+        if (
+          document.queryCommandSupported &&
+          document.queryCommandSupported("paste")
+        ) {
+          document.execCommand("paste");
+        } else {
+          console.warn("the clipboard api is not supported", e);
+        }
+      });
+    return;
+  }
+  if (name == "copy" || name == "cut") {
+    const selectedText = editor.value?.getCopyText();
+    copy({ text: selectedText });
+  }
+  editor.value?.execCommand(name);
+};
+
 watchEffect(async () => {
   if (isMarkdownFile.value && isPreview.value) {
     const new_value = editor.value?.getValue() || "";
@@ -186,36 +236,18 @@ onMounted(() => {
     `https://cdn.jsdelivr.net/npm/ace-builds@${ace_version}/src-min-noconflict/`
   );
 
-  editor.value = ace.edit("editor", {
-    value: fileContent,
-    showPrintMargin: false,
-    readOnly: fileStore.req?.type === "textImmutable",
-    theme: getEditorTheme(authStore.user?.aceEditorTheme ?? ""),
-    mode: isGcodeFile.value
-      ? "ace/mode/gcode"
-      : modelist.getModeForPath(fileStore.req?.name ?? "").mode,
-    wrap: true,
-    enableBasicAutocompletion: true,
-    enableLiveAutocompletion: true,
-    enableSnippets: true,
-  });
-
-  editor.value.setFontSize(fontSize.value);
-  editor.value.focus();
-
-  // track cursor line for 3D sphere highlight
-  editor.value.getSession().selection.on("changeCursor", () => {
-    const pos = editor.value!.getCursorPosition();
-    cursorLine.value = pos.row;
-  });
-
-  // fire debounced gcode update on every edit — viewer only re-parses after
-  // the user pauses typing for 600ms
-  editor.value.session.on("change", () => {
-    if (isGcodeFile.value) {
-      updateDebouncedGcode(editor.value!.getValue());
-    }
-  });
+  if (!layoutStore.loading) {
+    initEditor(fileContent);
+  } else {
+    const unwatch = watchEffect(() => {
+      if (!layoutStore.loading) {
+        setTimeout(() => {
+          initEditor(fileContent);
+          unwatch();
+        }, 50);
+      }
+    });
+  }
 });
 
 onBeforeUnmount(() => {
@@ -243,7 +275,43 @@ onBeforeRouteUpdate((to, from, next) => {
   });
 });
 
-// ── keyboard & page guards ───────────────────────────────────────────────────
+const initEditor = (fileContent: string) => {
+  editor.value = ace.edit("editor", {
+    value: fileContent,
+    showPrintMargin: false,
+    readOnly: fileStore.req?.type === "textImmutable",
+    theme: getEditorTheme(authStore.user?.aceEditorTheme ?? ""),
+    mode: isGcodeFile.value
+      ? "ace/mode/gcode"
+      : modelist.getModeForPath(fileStore.req!.name).mode,
+    wrap: true,
+    enableBasicAutocompletion: true,
+    enableLiveAutocompletion: true,
+    enableSnippets: true,
+  });
+
+  editor.value.setFontSize(fontSize.value);
+  editor.value.focus();
+
+  const selection = editor.value.getSelection();
+  selection.on("changeSelection", function () {
+    isSelectionEmpty.value = selection.isEmpty();
+  });
+
+  // sphere highlight in the 3D viewer follows the editor cursor
+  editor.value.getSession().selection.on("changeCursor", () => {
+    const pos = editor.value!.getCursorPosition();
+    cursorLine.value = pos.row;
+  });
+
+  // re-parse for the viewer only after the user pauses typing
+  editor.value.session.on("change", () => {
+    if (isGcodeFile.value) {
+      updateDebouncedGcode(editor.value!.getValue());
+    }
+  });
+};
+
 const keyEvent = (event: KeyboardEvent) => {
   if (event.code === "Escape") {
     close();
@@ -261,8 +329,7 @@ const handlePageChange = (event: BeforeUnloadEvent) => {
   }
 };
 
-// ── actions ──────────────────────────────────────────────────────────────────
-const save = async () => {
+const save = async (throwError?: boolean) => {
   const button = "save";
   buttons.loading("save");
   try {
@@ -272,6 +339,7 @@ const save = async () => {
   } catch (e: any) {
     buttons.done(button);
     $showError(e);
+    if (throwError) throw e;
   }
 };
 
@@ -295,11 +363,14 @@ const close = () => {
       prompt: "discardEditorChanges",
       confirm: (event: Event) => {
         event.preventDefault();
+        editor.value?.session.getUndoManager().reset();
         finishClose();
       },
       saveAction: async () => {
-        await save();
-        finishClose();
+        try {
+          await save(true);
+          finishClose();
+        } catch {}
       },
     });
     return;
@@ -308,7 +379,6 @@ const close = () => {
 };
 
 const finishClose = () => {
-  fileStore.updateRequest(null);
   const uri = url.removeLastDir(route.path) + "/";
   router.push({ path: uri });
 };
@@ -317,7 +387,7 @@ const preview = () => {
   isPreview.value = !isPreview.value;
 };
 
-// when user clicks in 3D viewer, jump Ace editor to that line
+// click in 3D viewer → jump Ace editor to that line
 const handleViewerLineSelect = (lineIndex: number) => {
   if (!editor.value) return;
   const session = editor.value.getSession();
@@ -333,85 +403,93 @@ const handleViewerLineSelect = (lineIndex: number) => {
   margin: 0 0.5em;
   color: var(--fg);
 }
+
+.editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.editor-header > div > button {
+  background: transparent;
+  color: var(--action);
+  border: none;
+  outline: none;
+  opacity: 0.8;
+  cursor: pointer;
+}
+
+.editor-header > div > button:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.editor-header > div > button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.editor-header > div > button > span > i {
+  font-size: 1.2rem;
+}
 </style>
 
 <style>
 /*
- * G-code syntax highlight colors for ace-gcode.js
+ * G-code syntax highlighting for ace-gcode.js
  *
- * Replace the <style> (non-scoped) block in Editor.vue with this.
- *
- * Design rules:
- *   - N-codes (block numbers) use `color: inherit` — they adapt to whatever
- *     Ace theme is active, so they're readable in both light and dark mode.
- *   - All other tokens use !important to beat Ace theme specificity.
- *   - Bare numbers use opacity so they recede without a hardcoded color.
+ * N-codes use `color: inherit` so they adapt to whatever Ace theme is active
+ * (readable in both light and dark). Other tokens use !important to beat
+ * Ace theme specificity. Bare numbers fall back to opacity.
  */
 
-/* ── Comments ──────────────────────────────────────────────────────────────── */
 .ace_gcode.ace_comment {
   color: #4b754b !important;
   font-style: italic;
 }
 
-/* ── Block numbers (N-codes) ───────────────────────────────────────────────── */
-/* inherit = uses the active Ace theme's foreground color.                      */
-/* Works correctly in light AND dark themes — no more white-on-white.           */
 .ace_gcode.ace_block {
   color: inherit;
-  opacity: 0.55;   /* dimmed so N-codes recede behind G/M words visually */
+  opacity: 0.55;
 }
 
-/* ── Program markers (% and Oxxxx) ────────────────────────────────────────── */
 .ace_gcode.ace_marker {
-  color: #e06c75 !important;  /* red — stands out as structural delimiters */
+  color: #e06c75 !important;
   font-weight: bold;
 }
 
-/* ── G-words ───────────────────────────────────────────────────────────────── */
 .ace_gcode.ace_gword {
-  color: #c586c0 !important;  /* purple */
+  color: #c586c0 !important;
   font-weight: bold;
 }
 
-/* ── M-codes ───────────────────────────────────────────────────────────────── */
 .ace_gcode.ace_mcode {
-  color: #dcdcaa !important;  /* yellow */
+  color: #dcdcaa !important;
   font-weight: bold;
 }
 
-/* ── X / I / A  (orange) ───────────────────────────────────────────────────── */
 .ace_gcode.ace_xparam {
   color: #ce9178 !important;
 }
 
-/* ── Y / J  (teal) ─────────────────────────────────────────────────────────── */
 .ace_gcode.ace_yparam {
   color: #4ec9b0 !important;
 }
 
-/* ── Z / K / B  (blue) ─────────────────────────────────────────────────────── */
 .ace_gcode.ace_zparam {
   color: #569cd6 !important;
 }
 
-/* ── F / S / H / D / T  (lighter teal) ────────────────────────────────────── */
 .ace_gcode.ace_feedspeed {
   color: #9cdcfe !important;
 }
 
-/* ── P subprogram numbers (light blue) ─────────────────────────────────────── */
 .ace_gcode.ace_subprog {
   color: #9cdcfe !important;
 }
 
-/* ── Bare numeric fallback ──────────────────────────────────────────────────── */
-/* opacity-only — inherits theme color so it works in light and dark mode       */
 .ace_constant.ace_numeric {
   opacity: 0.5;
 }
-
-/* ── Layout ─────────────────────────────────────────────────────────────────── */
 
 #editor-container {
   display: flex;
@@ -422,7 +500,7 @@ const handleViewerLineSelect = (lineIndex: number) => {
 .editor-layout {
   display: flex;
   flex: 1;
-  min-height: 0; /* lets flex children shrink below content size */
+  min-height: 0;
 }
 
 .editor-pane {

@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
-	nerrors "errors"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/filebrowser/filebrowser/v2/auth"
-	"github.com/filebrowser/filebrowser/v2/errors"
+	fberrors "github.com/filebrowser/filebrowser/v2/errors"
 	"github.com/filebrowser/filebrowser/v2/settings"
 )
 
@@ -45,6 +45,7 @@ func addConfigFlags(flags *pflag.FlagSet) {
 	flags.String("auth.method", string(auth.MethodJSONAuth), "authentication type")
 	flags.String("auth.header", "", "HTTP header for auth.method=proxy")
 	flags.String("auth.command", "", "command for auth.method=hook")
+	flags.String("auth.logoutPage", "", "url of custom logout page")
 
 	flags.String("recaptcha.host", "https://www.google.com", "use another host for ReCAPTCHA. recaptcha.net might be useful in China")
 	flags.String("recaptcha.key", "", "ReCaptcha site key")
@@ -98,12 +99,12 @@ func getProxyAuth(flags *pflag.FlagSet, defaultAuther map[string]interface{}) (a
 		return nil, err
 	}
 
-	if header == "" {
+	if header == "" && defaultAuther != nil {
 		header = defaultAuther["header"].(string)
 	}
 
 	if header == "" {
-		return nil, nerrors.New("you must set the flag 'auth.header' for method 'proxy'")
+		return nil, errors.New("you must set the flag 'auth.header' for method 'proxy'")
 	}
 
 	return &auth.ProxyAuth{Header: header}, nil
@@ -162,7 +163,7 @@ func getHookAuth(flags *pflag.FlagSet, defaultAuther map[string]interface{}) (au
 	}
 
 	if command == "" {
-		return nil, nerrors.New("you must set the flag 'auth.command' for method 'hook'")
+		return nil, errors.New("you must set the flag 'auth.command' for method 'hook'")
 	}
 
 	return &auth.HookAuth{Command: command}, nil
@@ -185,7 +186,7 @@ func getAuthentication(flags *pflag.FlagSet, defaults ...interface{}) (settings.
 	case auth.MethodHookAuth:
 		auther, err = getHookAuth(flags, defaultAuther)
 	default:
-		return "", nil, errors.ErrInvalidAuthMethod
+		return "", nil, fberrors.ErrInvalidAuthMethod
 	}
 
 	if err != nil {
@@ -201,6 +202,7 @@ func printSettings(ser *settings.Server, set *settings.Settings, auther auth.Aut
 	fmt.Fprintf(w, "Sign up:\t%t\n", set.Signup)
 	fmt.Fprintf(w, "Hide Login Button:\t%t\n", set.HideLoginButton)
 	fmt.Fprintf(w, "Create User Dir:\t%t\n", set.CreateUserDir)
+	fmt.Fprintf(w, "Logout Page:\t%s\n", set.LogoutPage)
 	fmt.Fprintf(w, "Minimum Password Length:\t%d\n", set.MinimumPasswordLength)
 	fmt.Fprintf(w, "Auth Method:\t%s\n", set.AuthMethod)
 	fmt.Fprintf(w, "Shell:\t%s\t\n", strings.Join(set.Shell, " "))
@@ -234,10 +236,12 @@ func printSettings(ser *settings.Server, set *settings.Settings, auther auth.Aut
 
 	fmt.Fprintln(w, "\nDefaults:")
 	fmt.Fprintf(w, "\tScope:\t%s\n", set.Defaults.Scope)
+	fmt.Fprintf(w, "\tDateFormat:\t%t\n", set.Defaults.DateFormat)
 	fmt.Fprintf(w, "\tHideDotfiles:\t%t\n", set.Defaults.HideDotfiles)
 	fmt.Fprintf(w, "\tLocale:\t%s\n", set.Defaults.Locale)
 	fmt.Fprintf(w, "\tView mode:\t%s\n", set.Defaults.ViewMode)
 	fmt.Fprintf(w, "\tSingle Click:\t%t\n", set.Defaults.SingleClick)
+	fmt.Fprintf(w, "\tRedirect after Copy/Move:\t%t\n", set.Defaults.RedirectAfterCopyMove)
 	fmt.Fprintf(w, "\tFile Creation Mode:\t%O\n", set.FileMode)
 	fmt.Fprintf(w, "\tDirectory Creation Mode:\t%O\n", set.DirMode)
 	fmt.Fprintf(w, "\tCommands:\t%s\n", strings.Join(set.Defaults.Commands, " "))
@@ -306,6 +310,9 @@ func getSettings(flags *pflag.FlagSet, set *settings.Settings, ser *settings.Ser
 		case "disableTypeDetectionByHeader":
 			ser.TypeDetectionByHeader, err = flags.GetBool(flag.Name)
 			ser.TypeDetectionByHeader = !ser.TypeDetectionByHeader
+		case "disableImageResolutionCalc":
+			ser.ImageResolutionCal, err = flags.GetBool(flag.Name)
+			ser.ImageResolutionCal = !ser.ImageResolutionCal
 
 		// Settings flags from [addConfigFlags]
 		case "signup":
@@ -328,6 +335,8 @@ func getSettings(flags *pflag.FlagSet, set *settings.Settings, ser *settings.Ser
 			set.DirMode, err = getAndParseFileMode(flags, flag.Name)
 		case "auth.method":
 			hasAuth = true
+		case "auth.logoutPage":
+			set.LogoutPage, err = flags.GetString(flag.Name)
 		case "branding.name":
 			set.Branding.Name, err = flags.GetString(flag.Name)
 		case "branding.theme":
@@ -357,7 +366,7 @@ func getSettings(flags *pflag.FlagSet, set *settings.Settings, ser *settings.Ser
 		flags.Visit(visit)
 	}
 
-	err := nerrors.Join(errs...)
+	err := errors.Join(errs...)
 	if err != nil {
 		return nil, err
 	}
