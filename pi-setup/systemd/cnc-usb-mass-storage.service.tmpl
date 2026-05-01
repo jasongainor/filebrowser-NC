@@ -1,0 +1,26 @@
+[Unit]
+Description=CNC USB Mass Storage gadget (loads g_mass_storage backed by the share image)
+DefaultDependencies=no
+After=local-fs.target
+Before=cnc-usb-watcher.service
+ConditionPathExists=@@IMAGE_PATH@@
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Stale-load guard: if the module is already loaded with a different file, unload first.
+ExecStartPre=/bin/sh -c 'modprobe -r g_mass_storage 2>/dev/null || true'
+ExecStart=/sbin/modprobe g_mass_storage \
+  file=@@IMAGE_PATH@@ \
+  removable=1 \
+  ro=0 \
+  stall=0 \
+  cdrom=0 \
+  nofua=1 \
+  iManufacturer="@@USB_VENDOR@@" \
+  iProduct="@@USB_PRODUCT@@" \
+  iSerialNumber="@@USB_SERIAL@@"
+ExecStop=/sbin/modprobe -r g_mass_storage
+
+[Install]
+WantedBy=multi-user.target

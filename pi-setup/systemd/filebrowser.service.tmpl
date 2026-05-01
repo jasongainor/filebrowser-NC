@@ -1,0 +1,22 @@
+[Unit]
+Description=File Browser (NC fork) — web file manager pointed at the CNC share
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@@FB_USER@@
+Group=@@FB_USER@@
+WorkingDirectory=@@FB_WORKDIR@@
+ExecStart=@@FB_BIN@@ --root @@SHARE_PATH@@ --address 0.0.0.0 --port 8080 --database @@FB_DB@@
+Restart=on-failure
+RestartSec=3
+
+# Hardening — relaxed because we serve from a user-chosen path
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
