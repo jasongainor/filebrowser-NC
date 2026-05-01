@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+#
+# cnc-usb-watcher — watches the share path for changes and re-exports the
+# USB mass-storage LUN so the connected CNC controller picks up new files
+# without the operator having to manually unmount + remount.
+#
+# Behaviour:
+#   1. inotifywait fires on any modify/create/delete/move under SHARE_PATH.
+#   2. Each event (re)starts a "settle" timer of WATCH_DEBOUNCE_SECONDS.
+#   3. We also enforce WATCH_MIN_INTERVAL_SECONDS between two consecutive
+#      eject/reattach cycles, so a stream of rapid edits doesn't flap the
+#      mount under the controller.
+#   4. On settle: sync, eject (echo "" > .../lun0/file), pause briefly,
+#      reattach (echo IMAGE_PATH > .../lun0/file). The controller's
+#      USB stack sees the volume drop and re-enumerate with fresh contents.
+#
+# Configured via /etc/cnc-pi.conf. Required vars:
+#   SHARE_PATH                    — the host-side mount point (filebrowser root)
+#   IMAGE_PATH                    — backing .img file passed to g_mass_storage
+#   WATCH_DEBOUNCE_SECONDS        — quiescence window before re-export (default 8)
+#   WATCH_MIN_INTERVAL_SECONDS    — minimum gap between re-exports (default 30)
+#
+# Logs to stderr; systemd captures via journalctl -u cnc-usb-watcher.
+
+set -euo pipefail
+
+CONF=/etc/cnc-pi.conf
+[[ -r $CONF ]] || { echo "missing $CONF — run setup-pi.sh first" >&2; exit 1; }
+# shellcheck disable=SC1090
+. "$CONF"
+
+: "${SHARE_PATH:?SHARE_PATH must be set in $CONF}"
+: "${IMAGE_PATH:?IMAGE_PATH must be set in $CONF}"
+WATCH_DEBOUNCE_SECONDS=${WATCH_DEBOUNCE_SECONDS:-8}
+WATCH_MIN_INTERVAL_SECONDS=${WATCH_MIN_INTERVAL_SECONDS:-30}
+
+# Locate the gadget LUN file. g_mass_storage exposes it under
+# /sys/devices/platform/.../gadget/lun0/file. We glob to be future-proof.
+find_lun_file() {
+  local f
+  for f in /sys/class/udc/*/device/gadget/lun0/file \
+           /sys/class/udc/*/device/gadget*/lun0/file \
+           /sys/devices/platform/*.usb/*/gadget/lun0/file \
+           /sys/devices/platform/soc/*.usb/*/gadget/lun0/file; do
+    [[ -w $f ]] && { echo "$f"; return 0; }
+  done
+  return 1
+}
+
+log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" >&2; }
+
+# Cross-process state: settle subshells update LAST_EXPORT and INHIBIT_UNTIL,
+# the inotify reader checks them. Files keep them in sync.
+STATE_DIR=${RUNTIME_DIRECTORY:-/run/cnc-usb-watcher}
+mkdir -p "$STATE_DIR"
+LAST_EXPORT_FILE="$STATE_DIR/last_export"
+INHIBIT_UNTIL_FILE="$STATE_DIR/inhibit_until"
+
+read_epoch() { [[ -r $1 ]] && cat "$1" || echo 0; }
+write_epoch() { printf '%s' "$1" > "$2"; }
+
+inhibit() { write_epoch "$(( $(date +%s) + 3 ))" "$INHIBIT_UNTIL_FILE"; }
+inhibited() { (( $(date +%s) < $(read_epoch "$INHIBIT_UNTIL_FILE") )); }
+
+reexport() {
+  local lun
+  if ! lun=$(find_lun_file); then
+    log "ERROR: could not find LUN file under /sys — is g_mass_storage loaded?"
+    return 1
+  fi
+
+  local now elapsed_since_last last_export
+  now=$(date +%s)
+  last_export=$(read_epoch "$LAST_EXPORT_FILE")
+  elapsed_since_last=$(( now - last_export ))
+  if (( elapsed_since_last < WATCH_MIN_INTERVAL_SECONDS )); then
+    local wait_for=$(( WATCH_MIN_INTERVAL_SECONDS - elapsed_since_last ))
+    log "min-interval guard: waiting ${wait_for}s before re-export"
+    sleep "$wait_for"
+  fi
+
+  inhibit
+  log "re-exporting USB LUN — eject + reattach"
+  sync
+  # Eject: empty string detaches the backing file. Controller sees device disappear.
+  printf '' > "$lun" || { log "WARN: eject write failed"; return 1; }
+  sleep 1
+  # Reattach with same backing file.
+  printf '%s' "$IMAGE_PATH" > "$lun" || { log "WARN: reattach write failed"; return 1; }
+  write_epoch "$(date +%s)" "$LAST_EXPORT_FILE"
+  log "re-export complete"
+}
+
+# Debounce: kill any in-flight settle timer and start a new one.
+SETTLE_PID=0
+schedule_reexport() {
+  if (( SETTLE_PID != 0 )) && kill -0 "$SETTLE_PID" 2>/dev/null; then
+    kill "$SETTLE_PID" 2>/dev/null || true
+  fi
+  ( sleep "$WATCH_DEBOUNCE_SECONDS"; reexport ) &
+  SETTLE_PID=$!
+}
+
+trap 'kill $SETTLE_PID 2>/dev/null || true' EXIT
+
+log "watching $SHARE_PATH (debounce=${WATCH_DEBOUNCE_SECONDS}s, min-interval=${WATCH_MIN_INTERVAL_SECONDS}s)"
+
+# inotifywait events: write closures, creates, deletes, moves, attribute changes.
+inotifywait -m -r -q -e close_write -e create -e delete -e move -e attrib \
+            --format '%T %e %w%f' --timefmt '%H:%M:%S' \
+            "$SHARE_PATH" \
+| while read -r line; do
+    if inhibited; then
+      continue
+    fi
+    log "fs event: $line"
+    schedule_reexport
+  done

@@ -46,6 +46,7 @@ var (
 		"disable-type-detection-by-header": "disableTypeDetectionByHeader",
 		"img-processors":                   "imageProcessors",
 		"cache-dir":                        "cacheDir",
+		"redis-cache-url":                  "redisCacheUrl",
 		"token-expiration-time":            "tokenExpirationTime",
 		"baseurl":                          "baseURL",
 	}
@@ -54,7 +55,7 @@ var (
 )
 
 // TODO(remove): remove after July 2026.
-func migrateFlagNames(f *pflag.FlagSet, name string) pflag.NormalizedName {
+func migrateFlagNames(_ *pflag.FlagSet, name string) pflag.NormalizedName {
 	if newName, ok := flagNamesMigrations[name]; ok {
 
 		if !warnedFlags[name] {
@@ -88,6 +89,7 @@ func init() {
 	flags.String("password", "", "hashed password for the first user when using quick setup")
 	flags.Uint32("socketPerm", 0666, "unix socket file permissions")
 	flags.String("cacheDir", "", "file cache directory (disabled if empty)")
+	flags.String("redisCacheUrl", "", "redis cache URL (for multi-instance deployments), e.g. redis://user:pass@host:port")
 	flags.Int("imageProcessors", 4, "image processors count")
 	addServerFlags(flags)
 }
@@ -108,6 +110,7 @@ func addServerFlags(flags *pflag.FlagSet) {
 	flags.Bool("disablePreviewResize", false, "disable resize of image previews")
 	flags.Bool("disableExec", true, "disables Command Runner feature")
 	flags.Bool("disableTypeDetectionByHeader", false, "disables type detection by reading file headers")
+	flags.Bool("disableImageResolutionCalc", false, "disables image resolution calculation by reading image files")
 }
 
 var rootCmd = &cobra.Command{
@@ -135,6 +138,11 @@ file named .filebrowser.{json, toml, yaml, yml} in the following directories:
 - $HOME/
 - /etc/filebrowser/
 
+**Note:** Only the options listed below can be set via the config file or
+environment variables. Other configuration options live exclusively in the
+database and so they must be set by the "config set" or "config
+import" commands.
+
 The precedence of the configuration values are as follows:
 
 - Flags
@@ -146,7 +154,7 @@ The precedence of the configuration values are as follows:
 Also, if the database path doesn't exist, File Browser will enter into
 the quick setup mode and a new database will be bootstrapped and a new
 user created with the credentials from options "username" and "password".`,
-	RunE: withViperAndStore(func(cmd *cobra.Command, _ []string, v *viper.Viper, st *store) error {
+	RunE: withViperAndStore(func(_ *cobra.Command, _ []string, v *viper.Viper, st *store) error {
 		if !st.databaseExisted {
 			err := quickSetup(v, st.Storage)
 			if err != nil {
@@ -168,6 +176,12 @@ user created with the credentials from options "username" and "password".`,
 				return fmt.Errorf("can't make directory %s: %w", cacheDir, err)
 			}
 			fileCache = diskcache.New(afero.NewOsFs(), cacheDir)
+		}
+
+		redisCacheURL := v.GetString("redisCacheUrl")
+		uploadCache, err := fbhttp.NewUploadCache(redisCacheURL)
+		if err != nil {
+			return fmt.Errorf("failed to initialize upload cache: %w", err)
 		}
 
 		server, err := getServerSettings(v, st.Storage)
@@ -221,7 +235,7 @@ user created with the credentials from options "username" and "password".`,
 			panic(err)
 		}
 
-		handler, err := fbhttp.NewHandler(imageService, fileCache, st.Storage, server, assetsFs)
+		handler, err := fbhttp.NewHandler(imageService, fileCache, uploadCache, st.Storage, server, assetsFs)
 		if err != nil {
 			return err
 		}
@@ -331,6 +345,10 @@ func getServerSettings(v *viper.Viper, st *storage.Storage) (*settings.Server, e
 		server.TypeDetectionByHeader = !v.GetBool("disableTypeDetectionByHeader")
 	}
 
+	if v.IsSet("disableImageResolutionCalc") {
+		server.ImageResolutionCal = !v.GetBool("disableImageResolutionCalc")
+	}
+
 	if v.IsSet("disableExec") {
 		server.EnableExec = !v.GetBool("disableExec")
 	}
@@ -383,10 +401,11 @@ func quickSetup(v *viper.Viper, s *storage.Storage) error {
 		MinimumPasswordLength: settings.DefaultMinimumPasswordLength,
 		UserHomeBasePath:      settings.DefaultUsersHomeBasePath,
 		Defaults: settings.UserDefaults{
-			Scope:          ".",
-			Locale:         "en",
-			SingleClick:    false,
-			AceEditorTheme: v.GetString("defaults.aceEditorTheme"),
+			Scope:                 ".",
+			Locale:                "en",
+			SingleClick:           false,
+			RedirectAfterCopyMove: true,
+			AceEditorTheme:        v.GetString("defaults.aceEditorTheme"),
 			Perm: users.Permissions{
 				Admin:    false,
 				Execute:  true,
@@ -439,6 +458,7 @@ func quickSetup(v *viper.Viper, s *storage.Storage) error {
 		ResizePreview:         !v.GetBool("disablePreviewResize"),
 		EnableExec:            !v.GetBool("disableExec"),
 		TypeDetectionByHeader: !v.GetBool("disableTypeDetectionByHeader"),
+		ImageResolutionCal:    !v.GetBool("disableImageResolutionCalc"),
 	}
 
 	err = s.Settings.SaveServer(ser)

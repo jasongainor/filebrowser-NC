@@ -1,0 +1,19 @@
+[Unit]
+Description=CNC USB watcher — debounced eject/reattach when files change
+After=cnc-usb-mass-storage.service
+Requires=cnc-usb-mass-storage.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/cnc-pi.conf
+ExecStart=@@WATCHER_BIN@@
+Restart=on-failure
+RestartSec=3
+# Watcher runs as root — it touches /sys/.../lun0/file and calls `mount`/`sync`.
+User=root
+# /run/cnc-usb-watcher holds last_export + inhibit_until epoch files.
+RuntimeDirectory=cnc-usb-watcher
+RuntimeDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

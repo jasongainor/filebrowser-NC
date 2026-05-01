@@ -178,6 +178,10 @@ const drop = async (event: Event) => {
         from: fileStore.req?.items[i].url,
         to: props.url + encodeURIComponent(fileStore.req?.items[i].name),
         name: fileStore.req?.items[i].name,
+        size: fileStore.req?.items[i].size,
+        modified: fileStore.req?.items[i].modified,
+        overwrite: false,
+        rename: false,
       });
     }
   }
@@ -189,9 +193,12 @@ const drop = async (event: Event) => {
   const path = el.__vue__.url;
   const baseItems = (await api.fetch(path)).items;
 
-  const action = (overwrite: boolean, rename: boolean) => {
-    api
-      .move(items, overwrite, rename)
+  const action = (overwrite?: boolean, rename?: boolean) => {
+    const action =
+      (event as KeyboardEvent).ctrlKey || (event as KeyboardEvent).metaKey
+        ? api.copy
+        : api.move;
+    action(items, overwrite, rename)
       .then(() => {
         fileStore.reload = true;
       })
@@ -200,26 +207,35 @@ const drop = async (event: Event) => {
 
   const conflict = upload.checkConflict(items, baseItems);
 
-  let overwrite = false;
-  let rename = false;
-
-  if (conflict) {
+  if (conflict.length > 0) {
     layoutStore.showHover({
-      prompt: "replace-rename",
-      confirm: (event: Event, option: any) => {
-        overwrite = option == "overwrite";
-        rename = option == "rename";
-
+      prompt: "resolve-conflict",
+      props: {
+        conflict: conflict,
+      },
+      confirm: (event: Event, result: Array<ConflictingResource>) => {
         event.preventDefault();
         layoutStore.closeHovers();
-        action(overwrite, rename);
+        for (let i = result.length - 1; i >= 0; i--) {
+          const item = result[i];
+          if (item.checked.length == 2) {
+            items[item.index].rename = true;
+          } else if (item.checked.length == 1 && item.checked[0] == "origin") {
+            items[item.index].overwrite = true;
+          } else {
+            items.splice(item.index, 1);
+          }
+        }
+        if (items.length > 0) {
+          action();
+        }
       },
     });
 
     return;
   }
 
-  action(overwrite, rename);
+  action(false, false);
 };
 
 const itemClick = (event: Event | KeyboardEvent) => {
@@ -265,7 +281,15 @@ const click = (event: Event | KeyboardEvent) => {
   }
 
   if (fileStore.selected.indexOf(props.index) !== -1) {
-    fileStore.removeSelected(props.index);
+    if (
+      (event as KeyboardEvent).ctrlKey ||
+      (event as KeyboardEvent).metaKey ||
+      fileStore.multiple
+    ) {
+      fileStore.removeSelected(props.index);
+    } else {
+      fileStore.selected = [props.index];
+    }
     return;
   }
 
@@ -291,7 +315,6 @@ const click = (event: Event | KeyboardEvent) => {
   }
 
   if (
-    !singleClick.value &&
     !(event as KeyboardEvent).ctrlKey &&
     !(event as KeyboardEvent).metaKey &&
     !fileStore.multiple

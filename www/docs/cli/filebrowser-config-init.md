@@ -21,6 +21,7 @@ filebrowser config init [flags]
   -a, --address string                   address to listen on (default "127.0.0.1")
       --auth.command string              command for auth.method=hook
       --auth.header string               HTTP header for auth.method=proxy
+      --auth.logoutPage string           url of custom logout page
       --auth.method string               authentication type (default "json")
   -b, --baseURL string                   base url
       --branding.color string            set the theme color
@@ -35,6 +36,7 @@ filebrowser config init [flags]
       --dateFormat                       use date format (true for absolute time, false for relative)
       --dirMode string                   mode bits that new directories are created with (default "0o750")
       --disableExec                      disables Command Runner feature (default true)
+      --disableImageResolutionCalc       disables image resolution calculation by reading image files
       --disablePreviewResize             disable resize of image previews
       --disableThumbnails                disable image thumbnails
       --disableTypeDetectionByHeader     disables type detection by reading file headers
@@ -59,6 +61,7 @@ filebrowser config init [flags]
       --recaptcha.host string            use another host for ReCAPTCHA. recaptcha.net might be useful in China (default "https://www.google.com")
       --recaptcha.key string             ReCaptcha site key
       --recaptcha.secret string          ReCaptcha secret
+      --redirectAfterCopyMove            redirect to destination after copy/move
   -r, --root string                      root to prepend to relative paths (default ".")
       --scope string                     scope for users (default ".")
       --shell string                     shell command to which other commands should be appended

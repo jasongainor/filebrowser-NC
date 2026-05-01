@@ -26,6 +26,11 @@ file named .filebrowser.{json, toml, yaml, yml} in the following directories:
 - $HOME/
 - /etc/filebrowser/
 
+**Note:** Only the options listed below can be set via the config file or
+environment variables. Other configuration options live exclusively in the
+database and so they must be set by the "config set" or "config
+import" commands.
+
 The precedence of the configuration values are as follows:
 
 - Flags
@@ -52,6 +57,7 @@ filebrowser [flags]
   -c, --config string                  config file path
   -d, --database string                database path (default "./filebrowser.db")
       --disableExec                    disables Command Runner feature (default true)
+      --disableImageResolutionCalc     disables image resolution calculation by reading image files
       --disablePreviewResize           disable resize of image previews
       --disableThumbnails              disable image thumbnails
       --disableTypeDetectionByHeader   disables type detection by reading file headers
@@ -62,6 +68,7 @@ filebrowser [flags]
       --noauth                         use the noauth auther when using quick setup
       --password string                hashed password for the first user when using quick setup
   -p, --port string                    port to listen on (default "8080")
+      --redisCacheUrl string           redis cache URL (for multi-instance deployments), e.g. redis://user:pass@host:port
   -r, --root string                    root to prepend to relative paths (default ".")
       --socket string                  socket to listen to (cannot be used with address, port, cert nor key flags)
       --socketPerm uint32              unix socket file permissions (default 438)
