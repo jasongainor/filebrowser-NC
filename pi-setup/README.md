@@ -1,41 +1,42 @@
 # pi-setup — CNC USB bridge installer
 
-Turn a fresh Raspberry Pi into a USB stick the CNC controller can read,
-with filebrowser-NC running on the LAN so you can drop files into it
-remotely. The Pi watches for changes and automatically does an
-eject + reattach so the controller picks up the new files without
-the operator having to dismount/remount on the panel.
+A Pi that pretends to be a USB stick to your CNC controller, with
+filebrowser-NC on the LAN as the upload UI.
 
-## What the script sets up
+**The pain this solves.** When the operator changes a file, the controller
+won't see it without a manual unmount + remount on the panel — and on
+some controllers, even that doesn't refresh the directory cache. This
+installer wires up a debounced eject + reattach, so any file write
+through filebrowser shows up on the machine's screen a few seconds later
+with no panel input.
 
-- **filebrowser-NC** as a systemd service, rooted at the share folder you pick.
-- **A FAT32 image file** loop-mounted at the share folder.
-  Filebrowser writes go directly into the image — there's no rsync between
-  "what you uploaded" and "what the controller sees", they're the same bytes.
-- **`g_mass_storage`** USB-gadget kernel module exporting that image file
-  to the connected controller.
-- **`cnc-usb-watcher`** — a small daemon (inotifywait + bash) that:
-  - debounces file change events for `WATCH_DEBOUNCE_SECONDS` (default 8s)
-  - enforces a minimum `WATCH_MIN_INTERVAL_SECONDS` (default 30s) between
-    re-exports so a stream of edits doesn't flap the mount under the controller
-  - on settle: writes empty string to `…/lun0/file` (eject), pauses, writes
-    the image path back (reattach) — controller's USB stack re-enumerates
-    with fresh contents
+## How it fits together
 
-## Run it
+- **filebrowser-NC** runs as a systemd service rooted at your share folder.
+- A **FAT32 image file** is loop-mounted at that folder, so filebrowser
+  writes land directly in the image — no rsync, no drift between "what
+  you uploaded" and "what the controller sees", they're the same bytes.
+- **`g_mass_storage`** exports that image to the controller as a USB drive.
+- **`cnc-usb-watcher`** debounces file events and re-exports the LUN
+  (`echo "" > …/lun0/file` then `echo $IMAGE_PATH > …/lun0/file`), which
+  the controller's USB stack handles like an unplug + replug. New
+  contents show up automatically.
 
-On a fresh Pi (Bookworm or later, with an OTG-capable Pi: Zero, Zero 2W, 4, 5):
+## First run
+
+Fresh Pi, Bookworm or later, OTG-capable hardware (Zero / Zero 2 W / 4 / 5):
 
 ```bash
 git clone https://github.com/jasongainor/filebrowser-NC.git
 cd filebrowser-NC
 ./rebuild-filebrowser.sh        # builds the binary
 sudo bash pi-setup/setup-pi.sh  # interactive installer
-sudo reboot                      # only first run, to enable dwc2 OTG
+sudo reboot                     # first run only — enables dwc2 OTG
 ```
 
-Plug the Pi into the controller's USB port via the OTG-capable port (the
-single USB-C on Zero 2 / Pi 4 / Pi 5; the inner micro-USB on Zero W).
+After reboot, plug the Pi into the controller's USB-OTG port (USB-C on
+Zero 2 / Pi 4 / Pi 5; inner micro-USB on Zero W). Filebrowser is on
+`http://<pi-ip>:8080`.
 
 ## Re-running
 

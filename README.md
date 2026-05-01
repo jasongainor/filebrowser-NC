@@ -6,6 +6,17 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/filebrowser/filebrowser/v2)](https://goreportcard.com/report/github.com/filebrowser/filebrowser/v2)
 [![Version](https://img.shields.io/github/release/filebrowser/filebrowser.svg)](https://github.com/filebrowser/filebrowser/releases/latest)
 
+> **filebrowser-NC** — fork of [filebrowser/filebrowser](https://github.com/filebrowser/filebrowser) with two CNC-shop additions:
+>
+> - **3D G-code viewer + gcode editor** (`.nc` / `.tap` / `.gcode` / `.cnc`): split-pane Ace editor with G-code syntax highlighting and a live Three.js toolpath preview; click in the 3D view to jump the editor cursor to the matching line.
+> - **`pi-setup/`** — turn a Raspberry Pi into a USB-stick the CNC controller reads from, with filebrowser on the LAN as the upload UI. Includes a debounced eject + reattach watcher so the controller picks up new files without operator action. See [`pi-setup/README.md`](pi-setup/README.md).
+>
+> **Local quickstart:** `./setup.sh` to pick a folder to serve, then it'll offer to build + run. Re-run anytime to change the folder. `./rebuild-filebrowser.sh` rebuilds and (re)starts.
+>
+> Everything below is upstream filebrowser documentation.
+
+---
+
 File Browser provides a file managing interface within a specified directory and it can be used to upload, delete, preview and edit your files. It is a **create-your-own-cloud**-kind of software where you can just install it on your server, direct it to a path and access your files through a nice web interface.
 
 ## Documentation

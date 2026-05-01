@@ -1,18 +1,28 @@
 #!/usr/bin/env bash
+#
+# rebuild-filebrowser.sh — build the frontend + Go binary, then start the server.
+#
+# Reads the served folder from .filebrowser.yaml (run ./setup.sh once to create it).
+# If .filebrowser.yaml is missing, falls back to ROOT_DIR_DEFAULT below — edit it
+# or just run ./setup.sh.
+
 set -euo pipefail
-
-# ── Root directory ─────────────────────────────────────────────────────────────
-# The directory filebrowser will serve.  Change this one line to point
-# at your files.  An absolute path is recommended.
-ROOT_DIR="/Users/jgainor/cnc/haas"
-# ──────────────────────────────────────────────────────────────────────────────
-
-# Always run from the repo root regardless of where the script is called from
 cd "$(dirname "$0")"
 
-echo ""
+CONFIG=.filebrowser.yaml
+ROOT_DIR_DEFAULT="$HOME/cnc/files"
+
+# Pull root from .filebrowser.yaml if present, else use default.
+if [[ -f $CONFIG ]]; then
+  ROOT_DIR=$(awk -F'"' '/^root:/ {print $2}' "$CONFIG" 2>/dev/null || true)
+fi
+ROOT_DIR="${ROOT_DIR:-$ROOT_DIR_DEFAULT}"
+
+mkdir -p "$ROOT_DIR"
+
+echo
 echo "  Root directory: $ROOT_DIR"
-echo ""
+echo
 
 echo "=== Building frontend ==="
 cd frontend
@@ -23,12 +33,9 @@ cd ..
 echo "=== Building Go backend ==="
 go build -o filebrowser
 
-# Write a config file so the root is picked up whether the binary is run
-# directly, under systemctl, or via any other launcher — no flags needed.
-# To change the root, edit ROOT_DIR at the top of this script and rebuild.
-echo "=== Writing .filebrowser.yaml ==="
-printf 'root: "%s"\n' "$ROOT_DIR" > .filebrowser.yaml
-echo "  root: $ROOT_DIR  →  .filebrowser.yaml"
+echo "=== Writing $CONFIG ==="
+printf 'root: "%s"\n' "$ROOT_DIR" > "$CONFIG"
+echo "  root: $ROOT_DIR  →  $CONFIG"
 
 echo "=== Stopping existing filebrowser instance ==="
 if [[ "$(uname)" == "Linux" ]]; then
@@ -42,8 +49,10 @@ echo "=== Deploy ==="
 if [[ "$(uname)" == "Linux" ]]; then
   sudo systemctl start filebrowser
   echo "Done. Tailing logs — ctrl+c to exit."
-  sudo journalctl -u filebrowser -f
+  exec sudo journalctl -u filebrowser -f
 else
-  echo "Non-Linux detected — skipping systemctl."
-  echo "Run ./filebrowser to test locally  (root: $ROOT_DIR)"
+  echo "Starting filebrowser locally — ctrl+c to stop."
+  echo "  → http://localhost:8080  (root: $ROOT_DIR)"
+  echo
+  exec ./filebrowser
 fi
