@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -183,7 +184,8 @@ func (s *Streamer) run(ctx context.Context, j *job, host string, port int) {
 		s.mu.Unlock()
 	}()
 
-	addr := fmt.Sprintf("%s:%d", host, port)
+	// net.JoinHostPort handles bracketing IPv6 addresses; "%s:%d" doesn't.
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		s.recordError(fmt.Errorf("dial %s: %w", addr, err))

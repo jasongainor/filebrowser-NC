@@ -236,7 +236,7 @@ user created with the credentials from options "username" and "password".`,
 			panic(err)
 		}
 
-		streamer := cnc.New(st.Storage.Settings)
+		streamer := cnc.New(st.Settings)
 
 		handler, err := fbhttp.NewHandler(imageService, fileCache, uploadCache, st.Storage, server, assetsFs, streamer)
 		if err != nil {
