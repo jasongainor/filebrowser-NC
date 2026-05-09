@@ -165,6 +165,7 @@ import {
   onBeforeUnmount,
   onMounted,
   ref,
+  watch,
   watchEffect,
 } from "vue";
 import { useI18n } from "vue-i18n";
@@ -312,7 +313,10 @@ const promptSendToMachine = async () => {
       layoutStore.closeHovers();
       try {
         await cncApi.start(filePath);
-        cncRunning.value = true;
+        // Trigger an immediate poll so cncRunning (a computed off the
+        // store) flips before the WS broadcasts the status frame.
+        cncStore.pollOnce();
+        followMachine.value = true;
         $showSuccess(t("buttons.sendingToMachine"));
       } catch (e: any) {
         $showError(e);
@@ -599,8 +603,8 @@ const handleViewerLineSelect = (lineIndex: number) => {
 // prevent thrash on a fast Haas — we only resync if the line moved.
 let lastFollowedLine = -1;
 watch(
-  () => [machineLine.value, followMachine.value] as const,
-  ([line, follow]) => {
+  () => [machineLine.value, followMachine.value] as [number | null, boolean],
+  ([line, follow]: [number | null, boolean]) => {
     if (!follow || line == null) return;
     if (line === lastFollowedLine) return;
     lastFollowedLine = line;
