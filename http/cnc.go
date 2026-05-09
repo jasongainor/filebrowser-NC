@@ -99,7 +99,7 @@ type cncStatusBody struct {
 // cncStatusHandler is auth-required (any logged-in user) so the
 // breadcrumb pill can poll it from every page. It does NOT require
 // admin — operators need to see whether a job is running.
-var cncStatusHandler = withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
+var cncStatusHandler = withUser(func(w http.ResponseWriter, r *http.Request, _ *data) (int, error) {
 	return renderJSON(w, r, cncStatusBody{
 		Running: false,
 		HaasOK:  true, // optimistic until the streamer reports otherwise
