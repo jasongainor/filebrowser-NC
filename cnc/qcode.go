@@ -104,7 +104,9 @@ func exchangeOnConn(conn net.Conn, qCode int, macroVar *int) (string, error) {
 	if err := conn.SetDeadline(deadline); err != nil {
 		return "", err
 	}
-	defer conn.SetDeadline(time.Time{}) // clear so the streaming loop isn't capped
+	defer func() {
+		_ = conn.SetDeadline(time.Time{}) // clear so the streaming loop isn't capped
+	}()
 
 	if _, err := conn.Write(payloadFor(qCode, macroVar)); err != nil {
 		return "", fmt.Errorf("write: %w", err)
