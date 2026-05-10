@@ -189,7 +189,6 @@ function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
 }
 
 const $showError = inject<IToastError>("$showError")!;
-const $showSuccess = inject<IToastSuccess>("$showSuccess")!;
 
 const fileStore = useFileStore();
 const authStore = useAuthStore();
