@@ -53,19 +53,14 @@ type ToolTable struct {
 	Slots          []ToolTableSlot `json:"slots"`
 }
 
-// toolTableBases maps a JSON field key to the macro-var base. Same
-// canonical NGC mapping the probe confirms — kept here so that if the
-// probe ever has to switch to a legacy mapping, this file is the only
-// place that needs to change.
-var toolTableBases = []struct {
-	Key  string
-	Base int
-}{
-	{"length_geom", 2001},
-	{"length_wear", 2201},
-	{"diameter_geom", 2401},
-	{"diameter_wear", 2601},
-}
+// Tool-table macro-var bases. Canonical NGC mapping confirmed by the
+// probe (probe.go). baseForKey() is the only consumer.
+const (
+	toolTableBaseLengthGeom   = 2001
+	toolTableBaseLengthWear   = 2201
+	toolTableBaseDiameterGeom = 2401
+	toolTableBaseDiameterWear = 2601
+)
 
 // ReadToolTable reads `slots` consecutive tool slots and returns a
 // structured table. slots is clamped to [1, 200] (Haas tool table max).
@@ -130,7 +125,7 @@ func (s *Streamer) ReadToolTable(ctx context.Context, slots int) (*ToolTable, er
 			markRemainingCancelled(rows, slot, slots, ctxErr)
 			break
 		}
-		v := 2001 + (slot - 1)
+		v := toolTableBaseLengthGeom + (slot - 1)
 		res, qerr := s.Query(ctx, 600, &v)
 		applyBase(&rows[slot], "length_geom", res, qerr, &populated[slot])
 	}
@@ -235,13 +230,13 @@ func (s *ToolTableSlot) errSet(key, msg string) {
 func baseForKey(key string) int {
 	switch key {
 	case "length_geom":
-		return 2001
+		return toolTableBaseLengthGeom
 	case "length_wear":
-		return 2201
+		return toolTableBaseLengthWear
 	case "diameter_geom":
-		return 2401
+		return toolTableBaseDiameterGeom
 	case "diameter_wear":
-		return 2601
+		return toolTableBaseDiameterWear
 	}
 	return 0
 }

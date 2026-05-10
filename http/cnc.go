@@ -509,11 +509,18 @@ func cncToolTableLatestHandler(registry *cnc.Registry) handleFunc {
 		}
 		// Pass through verbatim — table is already valid JSON. The
 		// frontend wraps it in {"table": ...} the same as the read
-		// handler so downstream parsing is uniform.
+		// handler so downstream parsing is uniform. Errors writing
+		// to the response are uninteresting (client likely closed);
+		// surface via the handler return only if the first write
+		// fails so the caller knows the body was truncated.
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"table":`))
-		w.Write(buf)
-		w.Write([]byte(`}`))
+		if _, err := w.Write([]byte(`{"table":`)); err != nil {
+			return 0, err
+		}
+		if _, err := w.Write(buf); err != nil {
+			return 0, err
+		}
+		_, _ = w.Write([]byte(`}`))
 		return 0, nil
 	})
 }
