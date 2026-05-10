@@ -107,26 +107,26 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="t in preflight.tools" :key="t.tool" :class="`tool-row--${t.status}`">
-                <td><strong>T{{ t.tool }}</strong></td>
+              <tr v-for="tu in preflight.tools" :key="tu.tool" :class="`tool-row--${tu.status}`">
+                <td><strong>T{{ tu.tool }}</strong></td>
                 <td class="tool-expected">
-                  <div v-if="t.expected_diameter !== undefined">⌀ {{ t.expected_diameter.toFixed(4) }}</div>
-                  <div v-if="t.comment" class="tool-comment">{{ t.comment }}</div>
-                  <div v-else-if="t.expected_diameter === undefined" class="tool-comment">
+                  <div v-if="tu.expected_diameter !== undefined">⌀ {{ tu.expected_diameter.toFixed(4) }}</div>
+                  <div v-if="tu.comment" class="tool-comment">{{ tu.comment }}</div>
+                  <div v-else-if="tu.expected_diameter === undefined" class="tool-comment">
                     {{ t("sendWizard.noComment") }}
                   </div>
                 </td>
                 <td class="tool-actual">
-                  <span v-if="t.actual_diameter !== undefined">⌀ {{ t.actual_diameter.toFixed(4) }}</span>
+                  <span v-if="tu.actual_diameter !== undefined">⌀ {{ tu.actual_diameter.toFixed(4) }}</span>
                   <span v-else>—</span>
-                  <span v-if="t.diameter_delta !== undefined" class="tool-delta">
-                    Δ {{ t.diameter_delta >= 0 ? "+" : "" }}{{ t.diameter_delta.toFixed(4) }}
+                  <span v-if="tu.diameter_delta !== undefined" class="tool-delta">
+                    Δ {{ tu.diameter_delta >= 0 ? "+" : "" }}{{ tu.diameter_delta.toFixed(4) }}
                   </span>
                 </td>
-                <td class="tool-refs">{{ t.reference_count }}×</td>
+                <td class="tool-refs">{{ tu.reference_count }}×</td>
                 <td>
-                  <span class="badge" :class="`badge--${t.status}`" :title="t.status_reason">
-                    {{ t.status }}
+                  <span class="badge" :class="`badge--${tu.status}`" :title="tu.status_reason">
+                    {{ tu.status }}
                   </span>
                 </td>
               </tr>
