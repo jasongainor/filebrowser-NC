@@ -95,7 +95,7 @@
             >
               <td class="thumb-col">
                 <ToolGeometryView
-                  :slot="row.slot"
+                  :slot-number="row.slot"
                   :length-ratio="ratioL(row.effective_length)"
                   :diameter-ratio="ratioD(row.effective_diameter)"
                   :width="24"
@@ -146,7 +146,7 @@
             :title="`T${row.slot} — ⌀${fmt(row.effective_diameter)} L${fmt(row.effective_length)}`"
           >
             <ToolGeometryView
-              :slot="row.slot"
+              :slot-number="row.slot"
               :length-ratio="ratioL(row.effective_length)"
               :diameter-ratio="ratioD(row.effective_diameter)"
               :width="48"

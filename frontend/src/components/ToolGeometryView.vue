@@ -89,7 +89,9 @@ const props = defineProps<{
   diameterRatio?: number;
   width: number | string;
   height: number | string;
-  slot?: number;
+  // Renamed from `slot` — Vue's eslint plugin treats bare `slot`
+  // bindings as the deprecated named-slot attribute and rejects them.
+  slotNumber?: number;
   // Optional badge color to recolor the body — caller can use this
   // to hint job state ("tool currently in spindle", etc).
   bodyFill?: string;
@@ -140,7 +142,7 @@ const bodyFill = computed(() => props.bodyFill || "#1976d2");
 const holderFill = computed(() => props.holderFill || "#9e9e9e");
 
 const ariaLabel = computed(() =>
-  props.slot !== undefined ? `Tool ${props.slot}` : "Tool"
+  props.slotNumber !== undefined ? `Tool ${props.slotNumber}` : "Tool"
 );
 </script>
 
