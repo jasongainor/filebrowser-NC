@@ -1095,7 +1095,24 @@ const Axis = (props: { label: string; value: unknown }) => {
   font-weight: 500;
 }
 
+/* Lock the camera tile to 16:9 regardless of card column width.
+   The card-body becomes the aspect-ratio box; the frame absolutely
+   fills it so iframe / video / img all share one sizing rule.
+   Non-16:9 sources letterbox via object-fit:contain — the alternative
+   (cover/crop) hides part of the working area, which an operator
+   watching the spindle cannot afford. */
+.camera-card .card-body {
+  flex: 0 0 auto;
+  aspect-ratio: 16 / 9;
+  display: block;
+  position: relative;
+  background: #000;
+  overflow: hidden;
+}
+
 .camera-frame {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
