@@ -643,7 +643,7 @@ func (s *Streamer) run(ctx context.Context, j *job, host string, port int) {
 			_, _ = j.dprnt.scavengeOnce(
 				conn,
 				s.dprntSink(j),
-				func(level, msg string) { s.logf(level, msg) },
+				func(level, msg string) { s.logf(level, "%s", msg) },
 			)
 		}
 
@@ -676,7 +676,7 @@ func (s *Streamer) run(ctx context.Context, j *job, host string, port int) {
 		_, _ = j.dprnt.scavengeOnce(
 			conn,
 			s.dprntSink(j),
-			func(level, msg string) { s.logf(level, msg) },
+			func(level, msg string) { s.logf(level, "%s", msg) },
 		)
 	}
 

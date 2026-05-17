@@ -45,6 +45,17 @@ type ToolTableSlot struct {
 	// "not read" (distinct from a confirmed zero).
 	// See docs/TOOL_LIFE_RESEARCH.md for the open mapping question.
 	CycleCount *int `json:"cycle_count,omitempty"`
+	// ManuallyEdited flags slots whose offsets the operator overrode
+	// in the dashboard. Edits create a new history dump (so the timeline
+	// still reads chronologically) but the affected slot carries this
+	// marker forward so the UI can show "this didn't come from the
+	// controller." See cnc_tool_table_edit.go.
+	ManuallyEdited bool `json:"manually_edited,omitempty"`
+	// EditedAt records when the operator made the override. Only set
+	// when ManuallyEdited is true. Distinct from the table-level
+	// ReadAt so a dump that mixes one edited slot with carried-over
+	// reads still reports the original read time per untouched slot.
+	EditedAt time.Time `json:"edited_at,omitempty"`
 }
 
 // ToolTable is the full structured readout from POST /api/cnc/tool-table.
@@ -57,6 +68,10 @@ type ToolTable struct {
 	SlotsRequested int             `json:"slots_requested"`
 	SlotsRead      int             `json:"slots_read"` // count of slots with at least one OK field
 	Slots          []ToolTableSlot `json:"slots"`
+	// Source distinguishes a controller readout ("" / "read") from a
+	// manually-edited dashboard-only snapshot ("edit"). Older history
+	// dumps don't carry this field — absence implies "read".
+	Source string `json:"source,omitempty"`
 }
 
 // Tool-table macro-var bases. Canonical NGC mapping confirmed by the
@@ -308,7 +323,15 @@ func markRemainingCancelled(rows []ToolTableSlot, from, slots int, ctxErr error)
 
 // parseFloatTail parses the trailing numeric token from a Q600 frame
 // like "MACRO,2001,3.5400". Returns the float and true on success.
+//
+// A trailing comma in the source ("MACRO, 5021,") signals an empty
+// value field. splitAndTrim drops empty fragments so we'd otherwise
+// promote the var-number to "the value." Catch that up-front so the
+// caller treats the frame as unparsed instead of as a confident zero.
 func parseFloatTail(value string) (float64, bool) {
+	if trimmed := strings.TrimRight(strings.TrimSpace(value), " \t"); strings.HasSuffix(trimmed, ",") {
+		return 0, false
+	}
 	parts := splitAndTrim(value, ",")
 	if len(parts) == 0 {
 		return 0, false
