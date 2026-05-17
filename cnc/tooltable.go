@@ -323,7 +323,15 @@ func markRemainingCancelled(rows []ToolTableSlot, from, slots int, ctxErr error)
 
 // parseFloatTail parses the trailing numeric token from a Q600 frame
 // like "MACRO,2001,3.5400". Returns the float and true on success.
+//
+// A trailing comma in the source ("MACRO, 5021,") signals an empty
+// value field. splitAndTrim drops empty fragments so we'd otherwise
+// promote the var-number to "the value." Catch that up-front so the
+// caller treats the frame as unparsed instead of as a confident zero.
 func parseFloatTail(value string) (float64, bool) {
+	if trimmed := strings.TrimRight(strings.TrimSpace(value), " \t"); strings.HasSuffix(trimmed, ",") {
+		return 0, false
+	}
 	parts := splitAndTrim(value, ",")
 	if len(parts) == 0 {
 		return 0, false

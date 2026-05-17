@@ -108,7 +108,7 @@ func (n *Notifier) SendTest(ctx context.Context, content string) error {
 		return err
 	}
 	if !cfg.Enabled() {
-		return fmt.Errorf("Discord notifications are not configured (need bot token + channel ID + at least one category)")
+		return fmt.Errorf("discord notifications are not configured (need bot token + channel ID + at least one category)")
 	}
 	return postDiscord(ctx, cfg, content)
 }
