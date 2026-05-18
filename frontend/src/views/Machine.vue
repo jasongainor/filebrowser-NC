@@ -46,11 +46,11 @@
                     {{ t('machine.attachDetach') }}
                   </button>
                 </div>
-                <ChapterList
-                  :chapters="chapters"
+                <ToolpathList
+                  :toolpaths="toolpaths"
                   :current-line="estimatedLine"
                   :top-offset="cnc.attachedFile && !cnc.running ? 36 : 6"
-                  @jump="onChapterJump"
+                  @jump="onToolpathJump"
                 />
                 <GcodeFollow
                   v-if="ncContent !== null"
@@ -94,6 +94,8 @@
           :line-current="Number(cnc.lineCurrent) || 0"
           :line-total="Number(cnc.lineTotal) || 0"
           :eta-ms="etaMs"
+          :motion-mode="motionHint.mode"
+          :motion-feed="motionHint.feed"
           @expand-camera="cameraExpanded = true"
         />
       </div>
@@ -145,8 +147,8 @@ import HeroStateBar from "@/components/machine/HeroStateBar.vue";
 import TabStrip from "@/components/machine/TabStrip.vue";
 import type { FileTabSpec } from "@/components/machine/TabStrip.vue";
 import GcodeFollow from "@/components/machine/GcodeFollow.vue";
-import ChapterList from "@/components/machine/ChapterList.vue";
-import { buildLineMap, resolveByN, resolveByPosition } from "@/utils/ncLineMap";
+import ToolpathList from "@/components/machine/ToolpathList.vue";
+import { buildLineMap, resolveByN, resolveByPosition, resolveMotionAt } from "@/utils/ncLineMap";
 import RightRail from "@/components/machine/RightRail.vue";
 import QueuePanel from "@/components/machine/QueuePanel.vue";
 import ConnectionModal from "@/components/machine/ConnectionModal.vue";
@@ -231,26 +233,27 @@ const ncContent = ref<string | null>(null);
 const ncLoading = ref(false);
 const fileTabs = ref<FileTabSpec[]>([]);
 
-// Chapter TOC for the active NC file. Derived per fetchNc; the
-// ChapterList overlay renders the popover + current-op pill, and
-// chapter clicks call gcodeFollowRef.jumpTo(line).
-const chapters = ref<Chapter[]>([]);
+// Toolpath TOC for the active NC file. Derived per fetchNc; the
+// ToolpathList overlay renders the popover + current-op pill, and
+// toolpath clicks call gcodeFollowRef.jumpTo(line). Backend type is
+// still `Chapter` for wire-compat — the rename is UI-only.
+const toolpaths = ref<Chapter[]>([]);
 const gcodeFollowRef = ref<InstanceType<typeof GcodeFollow> | null>(null);
 
-const refreshChapters = async (path: string) => {
+const refreshToolpaths = async (path: string) => {
   if (!path) {
-    chapters.value = [];
+    toolpaths.value = [];
     return;
   }
   try {
     const r = await cncApi.getChapters(path);
-    chapters.value = r.chapters || [];
+    toolpaths.value = r.chapters || [];
   } catch {
-    chapters.value = [];
+    toolpaths.value = [];
   }
 };
 
-const onChapterJump = (line: number) => {
+const onToolpathJump = (line: number) => {
   gcodeFollowRef.value?.jumpTo(line);
 };
 
@@ -396,12 +399,12 @@ watch(
       fetchNc(p);
       loadJobFolder(p);
       refreshPreflight(p);
-      refreshChapters(p);
+      refreshToolpaths(p);
     } else {
       ncContent.value = null;
       fileTabs.value = [];
       preflight.value = null;
-      chapters.value = [];
+      toolpaths.value = [];
     }
   },
   { immediate: false }
@@ -419,6 +422,18 @@ const nowTimer: ReturnType<typeof setInterval> = setInterval(
   () => (now.value = Date.now()),
   1000
 );
+// Modal motion at the estimated line — derived from the NC content so
+// it works regardless of whether the streamer is pushing bytes or the
+// program is running from machine memory. Walks back from estimatedLine
+// to the most recent G0/G1/G2/G3 + F-word.
+const motionHint = computed(() => {
+  if (!ncContent.value || !estimatedLine.value) {
+    return { mode: "unknown" as const, feed: null };
+  }
+  const r = resolveMotionAt(ncContent.value, estimatedLine.value);
+  return { mode: r.mode, feed: r.feed };
+});
+
 const etaMs = computed<number | null>(() => {
   if (!cnc.running) return null;
   const startedAt = cnc.raw?.started_at;
@@ -506,7 +521,7 @@ onMounted(async () => {
     fetchNc(initial);
     loadJobFolder(initial);
     refreshPreflight(initial);
-    refreshChapters(initial);
+    refreshToolpaths(initial);
   }
   stateHeartbeat = setInterval(() => {
     cnc.seedMetrics().catch(() => {

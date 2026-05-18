@@ -1,26 +1,26 @@
 <template>
-  <div class="m-chapters" v-if="chapters.length > 0" :style="topStyle">
+  <div class="m-toolpaths" v-if="toolpaths.length > 0" :style="topStyle">
     <button
-      class="m-chapters__btn"
-      :title="t('machine.chaptersTitle', { n: chapters.length })"
+      class="m-toolpaths__btn"
+      :title="t('machine.toolpathsTitle', { n: toolpaths.length })"
       @click.stop="open = !open"
     >
-      ☰ {{ t("machine.chapters", { n: chapters.length }) }}
+      ☰ {{ t("machine.toolpaths", { n: toolpaths.length }) }}
     </button>
-    <div v-if="currentLabel" class="m-chapters__current" :title="t('machine.chaptersCurrentTitle')">
+    <div v-if="currentLabel" class="m-toolpaths__current" :title="t('machine.toolpathsCurrentTitle')">
       {{ currentLabel }}
     </div>
-    <div v-if="open" class="m-chapters__menu" @click.stop>
-      <ol class="m-chapters__list">
+    <div v-if="open" class="m-toolpaths__menu" @click.stop>
+      <ol class="m-toolpaths__list">
         <li
-          v-for="c in chapters"
+          v-for="c in toolpaths"
           :key="c.line"
-          class="m-chapters__item"
-          :class="{ 'm-chapters__item--current': current?.line === c.line }"
+          class="m-toolpaths__item"
+          :class="{ 'm-toolpaths__item--current': current?.line === c.line }"
           @click="onJump(c.line)"
         >
-          <span class="m-chapters__line">L{{ c.line }}</span>
-          <span class="m-chapters__text">{{ c.comment }}</span>
+          <span class="m-toolpaths__line">L{{ c.line }}</span>
+          <span class="m-toolpaths__text">{{ c.comment }}</span>
         </li>
       </ol>
     </div>
@@ -35,7 +35,7 @@ import type { Chapter } from "@/api/cnc";
 const { t } = useI18n();
 
 const props = defineProps<{
-  chapters: Chapter[];
+  toolpaths: Chapter[];
   currentLine: number;
   // Pixel offset from the top of the parent pane. Machine.vue bumps
   // this up when the "Attached as current" banner is visible so the
@@ -51,13 +51,13 @@ const emit = defineEmits<{ (e: "jump", line: number): void }>();
 
 const open = ref(false);
 
-// Find the chapter whose line ≤ currentLine, with the highest line.
+// Find the toolpath whose line ≤ currentLine, with the highest line.
 // Equivalent to the Go-side ChapterAt; replicated here so a stale
 // network call doesn't gate the live indicator.
 const current = computed<Chapter | null>(() => {
-  if (!props.currentLine || props.chapters.length === 0) return null;
+  if (!props.currentLine || props.toolpaths.length === 0) return null;
   let match: Chapter | null = null;
-  for (const c of props.chapters) {
+  for (const c of props.toolpaths) {
     if (c.line <= props.currentLine) {
       match = c;
     } else {
@@ -70,7 +70,7 @@ const current = computed<Chapter | null>(() => {
 const currentLabel = computed(() => {
   const c = current.value;
   if (!c) return "";
-  return t("machine.chaptersCurrent", { name: c.comment });
+  return t("machine.toolpathsCurrent", { name: c.comment });
 });
 
 const onJump = (line: number) => {
@@ -80,7 +80,7 @@ const onJump = (line: number) => {
 </script>
 
 <style scoped>
-.m-chapters {
+.m-toolpaths {
   position: absolute;
   left: 6px;
   z-index: 2;
@@ -90,9 +90,9 @@ const onJump = (line: number) => {
   gap: 4px;
   pointer-events: none;
 }
-.m-chapters > * { pointer-events: auto; }
+.m-toolpaths > * { pointer-events: auto; }
 
-.m-chapters__btn {
+.m-toolpaths__btn {
   background: rgba(212, 209, 199, 0.1);
   color: #B4B2A9;
   border: 1px solid rgba(180, 178, 169, 0.25);
@@ -102,9 +102,9 @@ const onJump = (line: number) => {
   border-radius: 3px;
   cursor: pointer;
 }
-.m-chapters__btn:hover { background: rgba(212, 209, 199, 0.18); }
+.m-toolpaths__btn:hover { background: rgba(212, 209, 199, 0.18); }
 
-.m-chapters__current {
+.m-toolpaths__current {
   background: rgba(24, 95, 165, 0.22);
   color: #cfe6ff;
   font-size: 10px;
@@ -116,7 +116,7 @@ const onJump = (line: number) => {
   white-space: nowrap;
 }
 
-.m-chapters__menu {
+.m-toolpaths__menu {
   background: #2C2C2A;
   color: #B4B2A9;
   border: 1px solid rgba(180, 178, 169, 0.25);
@@ -128,29 +128,29 @@ const onJump = (line: number) => {
   overflow-y: auto;
   overscroll-behavior: contain;
 }
-.m-chapters__list {
+.m-toolpaths__list {
   list-style: none;
   margin: 0;
   padding: 4px 0;
   font-size: 11px;
 }
-.m-chapters__item {
+.m-toolpaths__item {
   display: grid;
   grid-template-columns: 3.5rem 1fr;
   gap: 6px;
   padding: 3px 8px;
   cursor: pointer;
 }
-.m-chapters__item:hover { background: rgba(212, 209, 199, 0.08); }
-.m-chapters__item--current {
+.m-toolpaths__item:hover { background: rgba(212, 209, 199, 0.08); }
+.m-toolpaths__item--current {
   background: rgba(24, 95, 165, 0.22);
   color: #cfe6ff;
 }
-.m-chapters__line {
+.m-toolpaths__line {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--fg-muted, #888780);
 }
-.m-chapters__text {
+.m-toolpaths__text {
   white-space: normal;
   word-break: break-word;
 }

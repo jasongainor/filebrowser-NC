@@ -3,11 +3,31 @@
     <div class="m-card">
       <div class="m-card__label">{{ t("machine.progress") }}</div>
       <div class="m-progress-row">
-        <span class="m-progress-num">{{ lineCurrent.toLocaleString() }} / {{ lineTotal.toLocaleString() }}</span>
+        <span class="m-progress-num">
+          {{ lineCurrent.toLocaleString() }} / {{ lineTotal.toLocaleString() }}
+          <span v-if="currentBlock" class="m-progress-nblock" :title="t('machine.progressNBlockTitle')">
+            N{{ currentBlock }}
+          </span>
+        </span>
         <span v-if="etaLabel" class="m-progress-eta">{{ etaLabel }}</span>
       </div>
       <div class="m-progress-bar">
         <div class="m-progress-fill" :style="{ width: pctWidth }" />
+      </div>
+      <div v-if="motionMode && motionMode !== 'unknown'" class="m-motion-row">
+        <span
+          v-if="motionMode === 'rapid'"
+          class="m-motion m-motion--rapid"
+          :title="t('machine.motionRapidTitle')"
+        >RAPID</span>
+        <span
+          v-else
+          class="m-motion m-motion--feed"
+          :title="t('machine.motionFeedTitle')"
+        >
+          <span class="m-motion__label">F</span>
+          <span class="m-motion__val">{{ motionFeed !== null && motionFeed !== undefined ? motionFeed.toFixed(1) : "—" }}</span>
+        </span>
       </div>
     </div>
 
@@ -76,6 +96,11 @@ const props = defineProps<{
   lineCurrent: number;
   lineTotal: number;
   etaMs: number | null;
+  // Modal motion at the current line, parsed from the NC content by
+  // Machine.vue. "rapid" colours a red RAPID badge, "feed" surfaces the
+  // F value, "unknown" hides the chip entirely (idle or pre-program).
+  motionMode?: "rapid" | "feed" | "unknown";
+  motionFeed?: number | null;
 }>();
 
 defineEmits<{
@@ -84,6 +109,19 @@ defineEmits<{
 
 const metric = (key: string) => cnc.metrics[key];
 const parsed = (key: string): unknown => metric(key)?.parsed ?? null;
+
+// Current N-block reported by the controller via macro #3030 (any
+// program source — MEM, DNC, SD card). Rendered next to the
+// "1234 / 5678" line counter so an operator running from machine
+// memory sees "I'm on N240" while the streamer's line count stays
+// at 0. Empty when the metric is stale or unset, so an idle machine
+// doesn't show a misleading N0.
+const currentBlock = computed<string>(() => {
+  const m = cnc.metrics.current_block;
+  if (!m || !m.value || m.stale) return "";
+  const n = parseInt(m.value, 10);
+  return Number.isFinite(n) && n > 0 ? String(n) : "";
+});
 
 const fmtAxis = (v: unknown): string => {
   if (typeof v === "number" && Number.isFinite(v)) return v.toFixed(4);
@@ -193,6 +231,20 @@ onBeforeUnmount(() => { if (snapshotTimer) clearInterval(snapshotTimer); });
   font-variant-numeric: tabular-nums;
 }
 .m-progress-eta { font-size: 11px; color: var(--fg-muted, #888); }
+/* N-block badge next to the line counter. Marker for "the controller
+   thinks it's on N240 right now" so operators running from machine
+   memory (no streamer line count) still have an authoritative pointer. */
+.m-progress-nblock {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 500;
+  background: rgba(24, 95, 165, 0.12);
+  color: #185FA5;
+  vertical-align: middle;
+}
 .m-progress-bar {
   height: 4px;
   background: var(--border-color, #e2e2e2);
@@ -205,6 +257,36 @@ onBeforeUnmount(() => { if (snapshotTimer) clearInterval(snapshotTimer); });
   background: #185FA5;
   transition: width 0.25s ease;
 }
+
+/* RAPID vs F chip — surfaces the modal motion at the current line so
+   the operator knows whether the machine is hauling at G00 or cutting
+   at G01 + the active feed. Pulled from the NC content client-side so
+   it works for both streamed and machine-memory jobs. */
+.m-motion-row {
+  display: flex;
+  margin-top: 6px;
+}
+.m-motion {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 3px;
+  letter-spacing: 0.05em;
+  font-variant-numeric: tabular-nums;
+}
+.m-motion--rapid {
+  background: rgba(198, 40, 40, 0.14);
+  color: #c62828;
+}
+.m-motion--feed {
+  background: rgba(99, 153, 34, 0.14);
+  color: #639922;
+  display: inline-flex;
+  gap: 4px;
+  align-items: baseline;
+}
+.m-motion__label { font-weight: 400; opacity: 0.8; }
+.m-motion__val { font-weight: 600; }
 
 .m-pos-table {
   display: grid;
