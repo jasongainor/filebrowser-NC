@@ -116,6 +116,70 @@ export function resolveByN(map: NcLineMap, n: number): number | null {
 }
 
 /**
+ * resolveMotionAt walks back from `line` to find the most recent G00 or
+ * G01/02/03 word AND the most recent F (feed) word. Used to render a
+ * rapid-vs-feed indicator on the right rail: the operator wants to know
+ * "is the spindle hauling at G00 right now?" or "what feed is the cut
+ * running at?" without parsing the program by eye.
+ *
+ * Returns mode === "rapid" | "feed" | "unknown" (no recent motion seen),
+ * plus the modal F value in the program's units (typically inches/min).
+ * Both can be present (G01 + F12.0) or one without the other.
+ */
+export interface ModalMotion {
+  mode: "rapid" | "feed" | "unknown";
+  feed: number | null;
+  // Lines back to where the G or F was found, for display ("last
+  // changed N lines ago"). 0 means the value is on the current line.
+  gFromLine: number | null;
+  fFromLine: number | null;
+}
+
+const G_MOTION_RE = /\bG0*([0-3])\b/i;
+const F_WORD_RE = /\bF(\d*\.?\d+)\b/i;
+
+export function resolveMotionAt(
+  content: string,
+  line: number
+): ModalMotion {
+  const out: ModalMotion = {
+    mode: "unknown",
+    feed: null,
+    gFromLine: null,
+    fFromLine: null,
+  };
+  if (!content || !line || line < 1) return out;
+  const lines = content.split(/\r?\n/);
+  const upTo = Math.min(line, lines.length);
+  // Walk backwards from the current line so the most-recent modal value
+  // wins. Bail once both G and F are resolved.
+  for (let i = upTo - 1; i >= 0; i--) {
+    const stripped = stripComment(lines[i]);
+    if (!stripped) continue;
+    if (out.mode === "unknown") {
+      const m = G_MOTION_RE.exec(stripped);
+      if (m) {
+        const g = parseInt(m[1], 10);
+        out.mode = g === 0 ? "rapid" : "feed";
+        out.gFromLine = upTo - 1 - i;
+      }
+    }
+    if (out.feed === null) {
+      const m = F_WORD_RE.exec(stripped);
+      if (m) {
+        const f = parseFloat(m[1]);
+        if (Number.isFinite(f) && f > 0) {
+          out.feed = f;
+          out.fFromLine = upTo - 1 - i;
+        }
+      }
+    }
+    if (out.mode !== "unknown" && out.feed !== null) break;
+  }
+  return out;
+}
+
+/**
  * resolveByPosition returns the source line whose modal (X, Y, Z) end
  * point is closest to the current machine position. Z is down-weighted
  * (CNC programs frequently retract to clearance Z; matching XY end

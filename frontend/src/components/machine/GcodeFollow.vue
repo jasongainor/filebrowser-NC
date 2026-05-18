@@ -74,9 +74,9 @@ watch(() => props.gcode, () => {
   if (following.value) nextTick(scrollToMachineLine);
 });
 
-// Exposed so the parent (Machine.vue) can drive chapter jumps. We
+// Exposed so the parent (Machine.vue) can drive toolpath jumps. We
 // detach follow when jumping so a live line update doesn't yank the
-// operator back away from the chapter they just clicked.
+// operator back away from the toolpath they just clicked.
 const jumpTo = (line: number) => {
   if (!line || line < 1) return;
   following.value = false;
