@@ -78,6 +78,17 @@
     "recoveryAck": "Acknowledge",
     "recoveryAcking": "Acknowledging…"
   },
+  "playback": {
+    "play": "Play (steps the cursor through the program at the chosen line rate)",
+    "pause": "Pause playback",
+    "stepBack": "Step back one line",
+    "stepForward": "Step forward one line",
+    "reset": "Reset to line 1",
+    "scrub": "Drag to scrub through the program",
+    "posTitle": "Simulated cursor line / total lines in the program",
+    "speedTitle": "Playback rate — how many lines per second to advance",
+    "linesPerSec": "l/s"
+  },
   "hostStats": {
     "temp": "CPU temp",
     "load1m": "Load (1 min)",

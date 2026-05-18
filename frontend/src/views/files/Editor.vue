@@ -117,9 +117,15 @@
             :title="t('buttons.dragToResize') || 'Drag to resize · double-click to reset'"
           ></div>
           <div class="viewer-pane">
+            <ToolpathList
+              :toolpaths="toolpaths"
+              :current-line="activeViewerLine ?? 0"
+              :top-offset="40"
+              @jump="onToolpathJump"
+            />
             <GCode3DViewer
               :gcode="debouncedGcode"
-              :cursor-line="cursorLine"
+              :cursor-line="activeViewerLine"
               :machine-line="machineLine"
               @select-line="handleViewerLineSelect"
             />
@@ -144,6 +150,17 @@
           </div>
         </template>
       </div>
+      <!-- Playback bar — pinned at the bottom of the editor view when
+           we have a G-code file open. While a real job is streaming
+           this file the bar locks: machineLine takes over the highlight
+           and we don't want the simulator fighting the live read. -->
+      <PlaybackBar
+        v-if="isGcodeFile"
+        :current-line="playbackLine"
+        :total-lines="totalLines"
+        :disabled="isStreamingThisFile"
+        @update:line="onPlaybackLine"
+      />
     </template>
   </div>
 </template>
@@ -185,6 +202,9 @@ import { onBeforeRouteUpdate, useRoute, useRouter } from "vue-router";
 import { read, copy } from "@/utils/clipboard";
 
 import GCode3DViewer from "@/components/GCode3DViewer.vue";
+import PlaybackBar from "@/components/machine/PlaybackBar.vue";
+import ToolpathList from "@/components/machine/ToolpathList.vue";
+import type { Chapter } from "@/api/cnc";
 
 // debounce helper — avoids pulling in lodash for one call site
 function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
@@ -265,6 +285,60 @@ const refreshCncStatus = () => cncStore.pollOnce();
 // try to be perfectly synchronous with the wire, just close.
 const followMachine = ref(true);
 let programmaticCursorMove = false;
+
+// ── Toolpath TOC + playback ───────────────────────────────────────────
+// Toolpath dropdown matches the /machine view's overlay. Loaded lazily
+// once when the file is identified as G-code; the API endpoint is
+// still named /chapters for wire compat.
+const toolpaths = ref<Chapter[]>([]);
+const refreshToolpaths = async () => {
+  if (!isGcodeFile.value || !fileStore.req?.path) {
+    toolpaths.value = [];
+    return;
+  }
+  const filePath = "/" + (fileStore.req.path.replace(/^\/+/, "") ?? "");
+  try {
+    const r = await cncApi.getChapters(filePath);
+    toolpaths.value = r.chapters || [];
+  } catch {
+    toolpaths.value = [];
+  }
+};
+const onToolpathJump = (line: number) => {
+  // Re-uses the same path as a 3D viewer click — keeps the Ace cursor
+  // and the playback line in lockstep.
+  handleViewerLineSelect(line - 1);
+  playbackLine.value = line;
+};
+
+// Playback: simulated cursor advance for previewing a program at a
+// chosen lines/sec rate. Drives both the Ace editor cursor and the 3D
+// viewer's cursor line. Real streaming jobs supersede it (the
+// PlaybackBar disables itself when isStreamingThisFile, and
+// activeViewerLine prefers machineLine then cursorLine then
+// playbackLine).
+const playbackLine = ref<number>(1);
+const totalLines = computed<number>(() => {
+  const v = debouncedGcode.value;
+  if (!v) return 0;
+  return v.split(/\r?\n/).length;
+});
+const onPlaybackLine = (line: number) => {
+  playbackLine.value = line;
+  // Keep the Ace cursor in sync so the operator sees the highlighted
+  // line plus the green cross in the 3D viewer at the same spot.
+  handleViewerLineSelect(line - 1);
+};
+// Single source of truth for "where the highlight should be." The 3D
+// viewer takes a cursor-line prop; we feed it the most authoritative
+// value available. machineLine > cursorLine > playbackLine. Falls back
+// to null when nothing is active so the viewer renders the program
+// fresh.
+const activeViewerLine = computed<number | null>(() => {
+  if (machineLine.value != null) return machineLine.value;
+  if (cursorLine.value != null) return cursorLine.value + 1; // Ace 0-based
+  return playbackLine.value;
+});
 
 const snapToLine = (line: number) => {
   if (!editor.value) return;
@@ -480,6 +554,7 @@ onMounted(() => {
 
   if (isGcodeFile.value) {
     refreshCncStatus();
+    refreshToolpaths();
   }
 
   const fileContent = fileStore.req?.content || "";
