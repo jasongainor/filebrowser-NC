@@ -92,9 +92,13 @@ const DiameterTolerance = 0.005
 
 // Top-of-file CAM tool-list line:
 //
-//	(T5 D=0.5 CR=0.06 - ZMIN=-1.87 - bullnose end mill)
+//	(T5 D=0.5 CR=0.06 - ZMIN=-1.87 - bullnose end mill)  -- Fusion
+//	(T1 D0.5 in End mill, TL=6.575, CL=4.0, FL=2.0)      -- CAMstudio
 //
-// Single capture group around the inside of the parens.
+// Single capture group around the inside of the parens. Both posts
+// emit one tool per comment line with the same T<num> prefix; only
+// the key=value syntax differs (D=0.5 vs D0.5; commas vs hyphens as
+// the field separator).
 var commentLine = regexp.MustCompile(`\(([^)]+)\)`)
 
 // One tool reference outside comments:
@@ -115,8 +119,13 @@ var toolCall = regexp.MustCompile(`(?i)\bT(\d{1,3})\b`)
 // Anchored at start to distinguish from inline references.
 var toolCommentHeader = regexp.MustCompile(`(?i)^\s*T(\d{1,3})\s*(.*)$`)
 
-var diamRe = regexp.MustCompile(`(?i)\bD\s*=\s*([0-9.]+)`)
-var cornerRe = regexp.MustCompile(`(?i)\bCR\s*=\s*([0-9.]+)`)
+// `=` is optional so the CAMstudio shape (D0.5, CR0.06) parses the
+// same as the Fusion shape (D=0.5, CR=0.06). The negative lookahead
+// on `D` against `=` would be tidier but the regexp package doesn't
+// support look-arounds; the trailing digit anchor is enough to keep
+// "DRILL" from matching "D" alone.
+var diamRe = regexp.MustCompile(`(?i)\bD\s*=?\s*([0-9]+\.?[0-9]*)`)
+var cornerRe = regexp.MustCompile(`(?i)\bCR\s*=?\s*([0-9]+\.?[0-9]*)`)
 
 // G41 = cutter compensation left, G42 = right. Word-boundary on the
 // trailing edge so G410 (extended G-code, not standard) doesn't false-
