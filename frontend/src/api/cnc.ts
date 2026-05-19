@@ -577,6 +577,76 @@ export function diffToolTables(opts: {
   );
 }
 
+// ── Job history + analytics ──────────────────────────────────────────────
+// One row per completed streaming job. Backed by a per-machine JSONL log
+// the streamer writes at job end — survives restarts.
+
+export interface JobHistoryEntry {
+  job_id: string;
+  machine_id: string;
+  file_path: string;
+  method?: string;
+  started_at: string;
+  ended_at: string;
+  duration_ms: number;
+  line_total: number;
+  line_final: number;
+  status: "completed" | "stopped" | "error";
+  error_msg?: string;
+}
+
+export interface JobsListResponse {
+  machine_id: string;
+  limit: number;
+  count: number;
+  entries: JobHistoryEntry[];
+}
+
+export interface JobFileStat {
+  file_path: string;
+  runs: number;
+  run_seconds: number;
+}
+
+export interface JobStats {
+  machine_id: string;
+  window_days: number;
+  window_start: string;
+  total_jobs: number;
+  completed_jobs: number;
+  stopped_jobs: number;
+  errored_jobs: number;
+  total_run_seconds: number;
+  avg_run_seconds: number;
+  longest_run_seconds: number;
+  last_job?: JobHistoryEntry;
+  top_files?: JobFileStat[];
+}
+
+export function listJobs(opts: { machineId?: string; limit?: number } = {}) {
+  const p = new URLSearchParams();
+  if (opts.machineId) p.set("machine_id", opts.machineId);
+  if (opts.limit) p.set("limit", String(opts.limit));
+  const qs = p.toString();
+  return fetchJSON<JobsListResponse>(
+    `/api/cnc/jobs${qs ? `?${qs}` : ""}`,
+    {},
+  );
+}
+
+export function getJobStats(
+  opts: { machineId?: string; days?: number } = {},
+) {
+  const p = new URLSearchParams();
+  if (opts.machineId) p.set("machine_id", opts.machineId);
+  if (opts.days !== undefined) p.set("days", String(opts.days));
+  const qs = p.toString();
+  return fetchJSON<JobStats>(
+    `/api/cnc/jobs/stats${qs ? `?${qs}` : ""}`,
+    {},
+  );
+}
+
 // ── Fusion 360 tool library ──────────────────────────────────────────────
 
 export interface FusionHolderSegment {

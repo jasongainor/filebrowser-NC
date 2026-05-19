@@ -79,6 +79,11 @@
               <ToolsTab :preflight="preflight" />
             </div>
 
+            <!-- Jobs tab -->
+            <div v-show="activeTab === 'jobs'" class="m-main__filltab">
+              <JobsTab :machine-id="cnc.currentMachineId || undefined" />
+            </div>
+
             <!-- File tab -->
             <div v-if="isFileTab" class="m-main__filltab">
               <FilePreview :file-path="activeTab" />
@@ -153,6 +158,7 @@ import RightRail from "@/components/machine/RightRail.vue";
 import QueuePanel from "@/components/machine/QueuePanel.vue";
 import ConnectionModal from "@/components/machine/ConnectionModal.vue";
 import ToolsTab from "@/components/machine/ToolsTab.vue";
+import JobsTab from "@/components/machine/JobsTab.vue";
 import FilePreview from "@/components/machine/FilePreview.vue";
 import { useCncStore } from "@/stores/cnc";
 import { useLayoutStore } from "@/stores/layout";
@@ -196,7 +202,10 @@ watch(
 // ── Active tab. "gcode" | "tools" | "<file-path>" ──
 const activeTab = ref<string>("gcode");
 const isFileTab = computed(
-  () => activeTab.value !== "gcode" && activeTab.value !== "tools"
+  () =>
+    activeTab.value !== "gcode" &&
+    activeTab.value !== "tools" &&
+    activeTab.value !== "jobs"
 );
 
 const onSelectTab = (tab: string) => {
