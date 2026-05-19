@@ -585,7 +585,7 @@ func (s *Streamer) run(ctx context.Context, j *job, host string, port int) {
 		// Persist a JSONL row per job — start/end/duration/status —
 		// for the /api/cnc/jobs analytics endpoints. Best-effort; a
 		// failed write doesn't block job teardown.
-		recordJobHistory(s.machineID, j, ctx, histErr)
+		recordJobHistory(ctx, s.machineID, j, histErr)
 		// Marker is cleared on clean exit (whether the source EOFed,
 		// the user clicked Stop, or the dial/write failed and we're
 		// returning the error). A crash between here and the next

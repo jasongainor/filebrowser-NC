@@ -232,7 +232,7 @@ func ComputeJobStats(machineID string, windowDays int) (*JobStats, error) {
 // distinguish operator-stop ("stopped") from a controller error
 // ("error") from a clean EOF ("completed"). lastError is the
 // streamer's last recorded write/dial failure (empty when clean).
-func recordJobHistory(machineID string, j *job, ctx context.Context, lastError string) {
+func recordJobHistory(ctx context.Context, machineID string, j *job, lastError string) {
 	if j == nil {
 		return
 	}
