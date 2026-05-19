@@ -21,6 +21,13 @@
           ⚠ {{ toolMismatchCount }}
         </span>
       </button>
+      <button
+        class="m-tab"
+        :class="{ 'm-tab--active': active === 'jobs' }"
+        @click="$emit('select', 'jobs')"
+      >
+        {{ t("machine.tabJobs") }}
+      </button>
     </div>
 
     <span v-if="fileTabs.length > 0" class="m-tabs__divider" />
