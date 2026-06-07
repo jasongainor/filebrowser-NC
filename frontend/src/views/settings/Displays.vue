@@ -197,13 +197,25 @@ const refresh = async () => {
   }
 };
 
-const rowFromApi = (d: Display): Row => ({
-  ...d,
-  resolution: d.resolution || [0, 0],
-  pocketGrid: d.pocketGrid || [0, 0],
-  fields: d.fields || [],
-  fieldsCsv: (d.fields || []).join(", "),
-});
+// rowFromApi preserves the user's explicit choices verbatim — 0 and
+// missing both mean "use the backend default," so we surface them as
+// empty inputs (which then show the placeholder = default value).
+// v-model.number on an empty input writes back null; we strip nulls
+// on save so the stored Display only carries explicit overrides.
+const rowFromApi = (d: Display): Row => {
+  const res = d.resolution || [0, 0];
+  const grid = d.pocketGrid || [0, 0];
+  return {
+    ...d,
+    resolution: [res[0] || (null as any), res[1] || (null as any)],
+    pocketGrid: [grid[0] || (null as any), grid[1] || (null as any)],
+    libraryPageSize: d.libraryPageSize || (null as any),
+    pollIntervalPoweredS: d.pollIntervalPoweredS || (null as any),
+    pollIntervalBatteryS: d.pollIntervalBatteryS || (null as any),
+    fields: d.fields || [],
+    fieldsCsv: (d.fields || []).join(", "),
+  };
+};
 
 const onAdd = () => {
   displays.push({
@@ -211,14 +223,17 @@ const onAdd = () => {
     name: "",
     machineId: machines.value[0]?.id || "",
     token: "",
-    resolution: [0, 0],
-    pocketGrid: [0, 0],
-    libraryPageSize: 0,
+    // null (not 0) so each input renders empty and shows its placeholder
+    // = the backend default. Users only fill in fields they want to
+    // override.
+    resolution: [null as any, null as any],
+    pocketGrid: [null as any, null as any],
+    libraryPageSize: null as any,
     fields: [],
     fieldsCsv: "",
     units: "",
-    pollIntervalPoweredS: 0,
-    pollIntervalBatteryS: 0,
+    pollIntervalPoweredS: null as any,
+    pollIntervalBatteryS: null as any,
     _isNew: true,
   });
 };
@@ -239,20 +254,25 @@ const onDelete = async (idx: number) => {
   displays.splice(idx, 1);
 };
 
+// fromRow strips empty/null/0 values so the stored Display only carries
+// explicit overrides. The backend's Resolved() view applies defaults
+// at read time; what's persisted is the user's intent. This keeps the
+// admin form's placeholders honest — leaving a field blank really
+// means "use the default," not "set it to 0."
 const fromRow = (r: Row): Display => ({
   id: r.id,
   name: r.name,
   machineId: r.machineId,
   token: r.token,
-  resolution: r.resolution,
-  pocketGrid: r.pocketGrid,
-  libraryPageSize: r.libraryPageSize,
+  resolution: [Number(r.resolution[0]) || 0, Number(r.resolution[1]) || 0],
+  pocketGrid: [Number(r.pocketGrid[0]) || 0, Number(r.pocketGrid[1]) || 0],
+  libraryPageSize: Number(r.libraryPageSize) || 0,
   fields: r.fieldsCsv
     ? r.fieldsCsv.split(",").map((s) => s.trim()).filter(Boolean)
     : [],
   units: r.units,
-  pollIntervalPoweredS: r.pollIntervalPoweredS,
-  pollIntervalBatteryS: r.pollIntervalBatteryS,
+  pollIntervalPoweredS: Number(r.pollIntervalPoweredS) || 0,
+  pollIntervalBatteryS: Number(r.pollIntervalBatteryS) || 0,
 });
 
 const onSaveAll = async () => {
@@ -325,10 +345,17 @@ onMounted(refresh);
 .display-row__pair {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  flex-wrap: nowrap;
 }
 .display-row__pair .input {
-  width: 70px;
+  width: 90px;
+}
+.display-row__grid p {
+  margin: 4px 0;
+}
+.display-row__grid .input {
+  min-width: 0;
 }
 .m-err {
   padding: 6px 10px;
