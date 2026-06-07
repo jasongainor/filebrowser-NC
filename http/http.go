@@ -80,6 +80,12 @@ func NewHandler(
 	api.Handle("/settings", monkey(settingsGetHandler, "")).Methods("GET")
 	api.Handle("/settings", monkey(settingsPutHandler, "")).Methods("PUT")
 
+	// /api/machines/{id}/* — display-agnostic per-machine views.
+	// Reuses the registry from the cnc subtree but its own URL path so
+	// downstream consumers (e-paper firmware, kiosk display) don't have
+	// to know about the /cnc internal routing.
+	api.Handle("/machines/{id}/toollist", monkey(cncMachineToolListHandler(registry), "")).Methods("GET")
+
 	cncRouter := api.PathPrefix("/cnc").Subrouter()
 	cncRouter.Handle("/settings", monkey(cncSettingsGetHandler, "")).Methods("GET")
 	cncRouter.Handle("/settings", monkey(cncSettingsPutHandler(registry), "")).Methods("PUT")
