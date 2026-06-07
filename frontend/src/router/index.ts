@@ -10,6 +10,7 @@ import Settings from "@/views/Settings.vue";
 import GlobalSettings from "@/views/settings/Global.vue";
 import Machine from "@/views/Machine.vue";
 import MachineSettings from "@/views/settings/Machine.vue";
+import Displays from "@/views/settings/Displays.vue";
 import ProfileSettings from "@/views/settings/Profile.vue";
 import Shares from "@/views/settings/Shares.vue";
 import Errors from "@/views/Errors.vue";
@@ -112,6 +113,14 @@ const routes = [
             path: "machine",
             name: "MachineSettings",
             component: MachineSettings,
+            meta: {
+              requiresAdmin: true,
+            },
+          },
+          {
+            path: "displays",
+            name: "Displays",
+            component: Displays,
             meta: {
               requiresAdmin: true,
             },
