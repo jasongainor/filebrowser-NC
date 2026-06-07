@@ -27,6 +27,7 @@ import (
 
 	"github.com/filebrowser/filebrowser/v2/cnc"
 	"github.com/filebrowser/filebrowser/v2/settings"
+	"github.com/filebrowser/filebrowser/v2/users"
 )
 
 // cncDisplaysListHandler returns the configured displays (admin only).
@@ -155,6 +156,18 @@ func cncDisplayFetchHandler(registry *cnc.Registry) handleFunc {
 				return http.StatusUnauthorized, nil
 			}
 		}
+		// buildMachineToolList needs a user for FullPath resolution on the
+		// tool-table dump directory. The firmware endpoint isn't wrapped in
+		// withUser (no JWT from the e-paper), so hydrate d.user manually
+		// with the first admin we find. Tool-table dumps are written from
+		// admin-scope anyway, so this is the same scope the dashboard uses.
+		if d.user == nil {
+			if u, ferr := firstAdminUser(d); ferr == nil {
+				d.user = u
+			} else {
+				return http.StatusInternalServerError, ferr
+			}
+		}
 		payload, status, err := buildMachineToolList(registry, d, disp.MachineID)
 		if err != nil {
 			return status, err
@@ -194,6 +207,23 @@ func newDisplayID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
+}
+
+// firstAdminUser returns the first user with admin perms. Used by the
+// unauthenticated firmware endpoint to populate d.user so FullPath()
+// path resolution works. Tool-table dumps are written under an admin
+// scope so this matches what's on disk.
+func firstAdminUser(d *data) (*users.User, error) {
+	all, err := d.store.Users.Gets(d.server.Root)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range all {
+		if u.Perm.Admin {
+			return u, nil
+		}
+	}
+	return nil, errors.New("no admin user configured")
 }
 
 // extractBearer pulls the token out of `Authorization: Bearer <t>`,
