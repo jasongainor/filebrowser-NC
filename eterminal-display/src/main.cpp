@@ -97,6 +97,10 @@ int current_page = 0;
 unsigned long last_good_fetch_ms = 0;
 bool serving_cache = false;
 String last_updated_display = "";
+
+// Forward decls — renderStatusBar() calls computeTotalPages() which is
+// defined further down; one-pass C++ parser needs the prototype.
+int computeTotalPages();
 bool machine_connected = false;
 String machine_name = "";
 int periodic_full_refresh_at_page = 0;   // for ghosting purge
