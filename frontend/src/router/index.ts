@@ -30,6 +30,7 @@ const titles = {
   GlobalSettings: "settings.globalSettings",
   Machine: "sidebar.machine",
   MachineSettings: "settings.machineSettings",
+  Displays: "settings.displaysSettings",
   Users: "settings.users",
   User: "settings.user",
   Forbidden: "errors.forbidden",
