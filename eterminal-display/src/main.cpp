@@ -527,7 +527,15 @@ void handleButton() {
 // ─── Setup + loop ────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
-  delay(500);
+  // USB CDC enumerates asynchronously. The host attaches the port a
+  // beat after the firmware boots; printing in that gap drops bytes.
+  // Wait up to ~3s for Serial to be attached so the operator's
+  // serial monitor catches the boot logs from line 1.
+  unsigned long t0 = millis();
+  while (!Serial && (millis() - t0) < 3000) {
+    delay(10);
+  }
+  delay(200);
   logf("eterminal-display %s booting", ETERMINAL_FIRMWARE_VERSION);
 
   // D6 / GPIO 43 doubles as UART0 TX on the ESP32-S3. Re-claiming it
@@ -585,6 +593,18 @@ void setup() {
 void loop() {
   ArduinoOTA.handle();
   handleButton();
+
+  // Heartbeat so we always have some signal in the serial monitor.
+  // If the operator opens the monitor late and missed setup() logs,
+  // this still tells them the firmware is alive and what state it's
+  // in. Once we're done debugging the device-side serial path we can
+  // drop the cadence to once a minute or remove entirely.
+  static unsigned long last_hb_ms = 0;
+  if (millis() - last_hb_ms > 5000) {
+    last_hb_ms = millis();
+    logf("[hb] up=%lus wifi=%d serving_cache=%d page=%d",
+         millis() / 1000, WiFi.status(), (int) serving_cache, current_page);
+  }
 
   static unsigned long last_poll_ms = 0;
   unsigned long now = millis();
