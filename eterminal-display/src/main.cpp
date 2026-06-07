@@ -530,7 +530,13 @@ void setup() {
   delay(500);
   logf("eterminal-display %s booting", ETERMINAL_FIRMWARE_VERSION);
 
-  pinMode(PIN_BUTTON, INPUT_PULLUP);
+  // D6 / GPIO 43 doubles as UART0 TX on the ESP32-S3. Re-claiming it
+  // here as a digital input kills Serial logs after boot, so the
+  // button is staged out until we confirm the actual reTerminal E1001
+  // user-button GPIO from Seeed's reference (or move to a free pin
+  // like D4 / GPIO 5). handleButton() still runs in loop() but a
+  // pull-up-less floating read is harmless — it just won't trigger.
+  // pinMode(PIN_BUTTON, INPUT_PULLUP);
 
   SPI.begin();
   display.init(115200, true, 2, false);
