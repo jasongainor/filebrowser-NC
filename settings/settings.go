@@ -48,10 +48,110 @@ type Cnc struct {
 	// at least one Category is enabled. See cnc/notify.go.
 	Discord DiscordConfig `json:"discord,omitempty"`
 
+	// Displays is the list of physical / kiosk surfaces that consume
+	// the tool-list view. Each carries a machine pointer + a layout
+	// config. See Display below + the /api/displays/{id} endpoint.
+	Displays []Display `json:"displays,omitempty"`
+
 	// ── Legacy fields (deprecated; migrated into Machines[0]) ──
 	HaasHost  string `json:"haasHost,omitempty"`
 	HaasPort  int    `json:"haasPort,omitempty"`
 	CameraURL string `json:"cameraUrl,omitempty"`
+}
+
+// Display is one physical surface (typically a reTerminal E1001
+// e-paper) that renders the reconciled tool list for one machine.
+// Layout fields steer the on-device rendering — the firmware reads
+// them verbatim from /api/displays/{id}.
+type Display struct {
+	// ID is the stable identifier the firmware embeds in its config
+	// (SD config.json -> display_id). Generated on creation.
+	ID string `json:"id"`
+	// Name is the operator-facing label (admin UI only).
+	Name string `json:"name,omitempty"`
+	// MachineID points at the Machine whose tool list this display
+	// shows. Required; CRUD rejects creates with an unknown ID.
+	MachineID string `json:"machineId"`
+	// Token is an optional bearer the firmware sends as ?token=...
+	// or Authorization: Bearer <t>. When set the endpoint enforces
+	// it; empty means LAN-permissive (the default — there is no
+	// reasonable threat model on an isolated shop network).
+	Token string `json:"token,omitempty"`
+	// Resolution is [width,height] in physical pixels. E1001 = 800×480.
+	Resolution [2]int `json:"resolution,omitempty"`
+	// PocketGrid is [columns,rows] for the page-1 pocket map. E1001
+	// 800×480 fits 2×10 cleanly (80 px wide cells).
+	PocketGrid [2]int `json:"pocketGrid,omitempty"`
+	// LibraryPageSize is the number of rows per library page. With
+	// six fields visible and 14 px row height a 480-px screen fits
+	// ~24 rows; 20 leaves room for the status line + page indicator.
+	LibraryPageSize int `json:"libraryPageSize,omitempty"`
+	// Fields is the ordered list of tool-list fields to render in the
+	// library table. Known values: pocket, tool_number, description,
+	// diameter, length, wear. Defaults to a sensible 6-column layout
+	// when empty.
+	Fields []string `json:"fields,omitempty"`
+	// Units overrides the machine's default. Empty falls back to the
+	// machine-level value (typically "in" for Haas NGC).
+	Units string `json:"units,omitempty"`
+	// PollIntervalPoweredS is the cadence the firmware refetches when
+	// USB-powered. PollIntervalBatteryS is the slower cadence for
+	// optional battery operation. Either 0 falls back to a default.
+	PollIntervalPoweredS int `json:"pollIntervalPoweredS,omitempty"`
+	PollIntervalBatteryS int `json:"pollIntervalBatteryS,omitempty"`
+}
+
+// Defaults below are applied at GET-time so a Display created with
+// minimal config (just MachineID) still renders correctly. We don't
+// rewrite the stored Display — admins editing the JSON can leave a
+// field empty to mean "use the default."
+const (
+	DefaultDisplayResX                = 800
+	DefaultDisplayResY                = 480
+	DefaultDisplayPocketCols          = 2
+	DefaultDisplayPocketRows          = 10
+	DefaultDisplayLibraryPageSize     = 20
+	DefaultDisplayPollPoweredSeconds  = 60
+	DefaultDisplayPollBatterySeconds  = 900
+)
+
+// DefaultDisplayFields is the order the firmware should render library
+// columns when Display.Fields is empty.
+var DefaultDisplayFields = []string{
+	"pocket", "tool_number", "description", "diameter", "length", "wear",
+}
+
+// Resolved returns the Display with all zero-value layout fields
+// substituted for their defaults. The HTTP layer calls this before
+// returning the config so the firmware never has to deal with
+// "what's the default?"
+func (d Display) Resolved() Display {
+	out := d
+	if out.Resolution[0] == 0 {
+		out.Resolution[0] = DefaultDisplayResX
+	}
+	if out.Resolution[1] == 0 {
+		out.Resolution[1] = DefaultDisplayResY
+	}
+	if out.PocketGrid[0] == 0 {
+		out.PocketGrid[0] = DefaultDisplayPocketCols
+	}
+	if out.PocketGrid[1] == 0 {
+		out.PocketGrid[1] = DefaultDisplayPocketRows
+	}
+	if out.LibraryPageSize <= 0 {
+		out.LibraryPageSize = DefaultDisplayLibraryPageSize
+	}
+	if len(out.Fields) == 0 {
+		out.Fields = append([]string{}, DefaultDisplayFields...)
+	}
+	if out.PollIntervalPoweredS <= 0 {
+		out.PollIntervalPoweredS = DefaultDisplayPollPoweredSeconds
+	}
+	if out.PollIntervalBatteryS <= 0 {
+		out.PollIntervalBatteryS = DefaultDisplayPollBatterySeconds
+	}
+	return out
 }
 
 // DiscordConfig drives push notifications to a Discord channel.

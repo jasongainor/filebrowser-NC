@@ -86,6 +86,11 @@ func NewHandler(
 	// to know about the /cnc internal routing.
 	api.Handle("/machines/{id}/toollist", monkey(cncMachineToolListHandler(registry), "")).Methods("GET")
 
+	// /api/displays/{id} — the unauthenticated firmware endpoint that
+	// embeds config + toollist data in one round trip. Token-gated
+	// when the admin set a token on the Display.
+	api.Handle("/displays/{id}", monkey(cncDisplayFetchHandler(registry), "")).Methods("GET")
+
 	cncRouter := api.PathPrefix("/cnc").Subrouter()
 	cncRouter.Handle("/settings", monkey(cncSettingsGetHandler, "")).Methods("GET")
 	cncRouter.Handle("/settings", monkey(cncSettingsPutHandler(registry), "")).Methods("PUT")
@@ -102,6 +107,10 @@ func NewHandler(
 	cncRouter.Handle("/tool-table/edit", monkey(cncToolTableEditHandler(registry), "")).Methods("POST")
 	cncRouter.Handle("/jobs", monkey(cncJobsListHandler(registry), "")).Methods("GET")
 	cncRouter.Handle("/jobs/stats", monkey(cncJobsStatsHandler(registry), "")).Methods("GET")
+	cncRouter.Handle("/displays", monkey(cncDisplaysListHandler(), "")).Methods("GET")
+	cncRouter.Handle("/displays", monkey(cncDisplaysCreateHandler(), "")).Methods("POST")
+	cncRouter.Handle("/displays/{id}", monkey(cncDisplaysUpdateHandler(), "")).Methods("PUT")
+	cncRouter.Handle("/displays/{id}", monkey(cncDisplaysDeleteHandler(), "")).Methods("DELETE")
 	cncRouter.Handle("/preflight", monkey(cncPreflightHandler(registry), "")).Methods("GET")
 	cncRouter.Handle("/siblings", monkey(cncSiblingsHandler(registry), "")).Methods("GET")
 	cncRouter.Handle("/start", monkey(cncStartHandler(registry), "")).Methods("POST")

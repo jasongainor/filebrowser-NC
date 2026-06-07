@@ -577,6 +577,58 @@ export function diffToolTables(opts: {
   );
 }
 
+// ── Displays (e-paper / kiosk surfaces) ──────────────────────────────────
+
+export interface Display {
+  id: string;
+  name?: string;
+  machineId: string;
+  token?: string;
+  // Tuples are non-optional on the Vue side so v-model bindings on
+  // resolution[0] etc. don't need null guards. The Resolved() Go-side
+  // path means an absent value still produces a sensible default.
+  resolution: [number, number];
+  pocketGrid: [number, number];
+  libraryPageSize?: number;
+  fields?: string[];
+  units?: string;
+  pollIntervalPoweredS?: number;
+  pollIntervalBatteryS?: number;
+}
+
+export function listDisplays() {
+  return fetchJSON<{ displays: Display[] }>(`/api/cnc/displays`, {});
+}
+
+export function createDisplay(d: Display) {
+  return fetchJSON<Display>(`/api/cnc/displays`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(d),
+  });
+}
+
+export function updateDisplay(id: string, d: Display) {
+  return fetchJSON<Display>(
+    `/api/cnc/displays/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(d),
+    },
+  );
+}
+
+export async function deleteDisplay(id: string) {
+  const res = await fetchURL(
+    `/api/cnc/displays/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
+  if (res.status >= 400) {
+    throw new Error(`delete display failed: ${res.status}`);
+  }
+}
+
 // ── Job history + analytics ──────────────────────────────────────────────
 // One row per completed streaming job. Backed by a per-machine JSONL log
 // the streamer writes at job end — survives restarts.

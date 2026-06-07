@@ -25,6 +25,11 @@
               {{ t("settings.machineSettings") }}
             </li></router-link
           >
+          <router-link to="/settings/displays" v-if="user?.perm.admin"
+            ><li :class="{ active: $route.path === '/settings/displays' }">
+              {{ t("settings.displaysSettings") }}
+            </li></router-link
+          >
           <router-link to="/settings/users" v-if="user?.perm.admin"
             ><li
               :class="{
