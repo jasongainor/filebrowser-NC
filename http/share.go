@@ -12,10 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
-
 	fberrors "github.com/filebrowser/filebrowser/v2/errors"
 	"github.com/filebrowser/filebrowser/v2/share"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func withPermShare(fn handleFunc) handleFunc {
@@ -57,7 +56,15 @@ var shareListHandler = withPermShare(func(w http.ResponseWriter, r *http.Request
 })
 
 var shareGetsHandler = withPermShare(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-	s, err := d.store.Share.Gets(r.URL.Path, d.user.ID)
+	var (
+		s   []*share.Link
+		err error
+	)
+	if d.user.Perm.Admin {
+		s, err = d.store.Share.GetsByPath(r.URL.Path)
+	} else {
+		s, err = d.store.Share.Gets(r.URL.Path, d.user.ID)
+	}
 	if errors.Is(err, fberrors.ErrNotExist) {
 		return renderJSON(w, r, []*share.Link{})
 	}
@@ -91,6 +98,17 @@ var shareDeleteHandler = withPermShare(func(_ http.ResponseWriter, r *http.Reque
 })
 
 var sharePostHandler = withPermShare(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
+	// Only allow sharing paths that currently exist. Otherwise a share could be
+	// created for a non-existent path and would silently start exposing
+	// whatever file later appears there.
+	//
+	// d.user.Fs is scoped, so Stat also refuses to follow a symlink whose target
+	// escapes the user's scope: that returns a permission error here and so
+	// blocks creating a share that points out of scope.
+	if _, err := d.user.Fs.Stat(r.URL.Path); err != nil {
+		return errToStatus(err), err
+	}
+
 	var s *share.Link
 	var body share.CreateBody
 	if r.Body != nil {

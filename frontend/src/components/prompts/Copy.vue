@@ -92,6 +92,7 @@ export default {
           to: this.dest + encodeURIComponent(this.req.items[item].name),
           name: this.req.items[item].name,
           size: this.req.items[item].size,
+          isDir: this.req.items[item].isDir,
           modified: this.req.items[item].modified,
           overwrite: false,
           rename: this.$route.path === this.dest,
@@ -122,8 +123,7 @@ export default {
           });
       };
 
-      const dstItems = (await api.fetch(this.dest)).items;
-      const conflict = upload.checkConflict(items, dstItems);
+      const conflict = await upload.checkConflict(items, this.dest, true);
 
       if (conflict.length > 0) {
         this.showHover({
