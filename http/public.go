@@ -1,6 +1,7 @@
 package fbhttp
 
 import (
+	"crypto/subtle"
 	"errors"
 	"net/http"
 	"net/url"
@@ -8,11 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/spf13/afero"
-	"golang.org/x/crypto/bcrypt"
-
 	"github.com/filebrowser/filebrowser/v2/files"
 	"github.com/filebrowser/filebrowser/v2/share"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var withHashFile = func(fn handleFunc) handleFunc {
@@ -64,8 +63,16 @@ var withHashFile = func(fn handleFunc) handleFunc {
 			filePath = ifPath
 		}
 
-		// set fs root to the shared file/folder
-		d.user.Fs = afero.NewBasePathFs(d.user.Fs, basePath)
+		// set fs root to the shared file/folder. ScopedFs (not a bare
+		// BasePathFs) so the share is also symlink-confined: a link inside the
+		// shared subtree that points elsewhere in the owner's scope — outside
+		// the share — must not be followed.
+		d.user.Fs = files.NewScopedFs(d.user.Fs, basePath)
+
+		// the filesystem is now rebased onto basePath, so paths handed to the
+		// rule checker are relative to it. Resolve them back to the user's
+		// original scope so deny rules below the share root keep applying.
+		d.checkerPrefix = basePath
 
 		file, err = files.NewFileInfo(&files.FileOptions{
 			Fs:      d.user.Fs,
@@ -131,7 +138,7 @@ func authenticateShareRequest(r *http.Request, l *share.Link) (int, error) {
 		return 0, nil
 	}
 
-	if r.URL.Query().Get("token") == l.Token {
+	if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(l.Token)) == 1 {
 		return 0, nil
 	}
 

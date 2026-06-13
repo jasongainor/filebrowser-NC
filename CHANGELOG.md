@@ -2,6 +2,110 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [2.63.14](https://github.com/filebrowser/filebrowser/compare/v2.63.13...v2.63.14) (2026-06-07)
+
+
+### Bug Fixes
+
+* recursive check ([3406d3d](https://github.com/filebrowser/filebrowser/commit/3406d3d7f98dfc3c16e4ff7ff4a87e3bdfe221dd))
+
+
+### Refactorings
+
+* ScopedFs to avoid escaping symlinks ([7c2c0a1](https://github.com/filebrowser/filebrowser/commit/7c2c0a11b31b2bb214d741005a0b02b1764208b3))
+
+## [2.63.13](https://github.com/filebrowser/filebrowser/compare/v2.63.12...v2.63.13) (2026-06-06)
+
+
+### Bug Fixes
+
+* copy/move allow overwrite ([a1a514d](https://github.com/filebrowser/filebrowser/commit/a1a514dcbb216d2080412c5354eea1e1fb033050))
+
+
+### Refactorings
+
+* cleanup and simplify upload.ts ([5f7311d](https://github.com/filebrowser/filebrowser/commit/5f7311d32437e98d7c14c7b307a4f68109275535))
+
+## [2.63.12](https://github.com/filebrowser/filebrowser/compare/v2.63.11...v2.63.12) (2026-06-04)
+
+
+### Bug Fixes
+
+* await copy move conflict detection ([#5978](https://github.com/filebrowser/filebrowser/issues/5978)) ([c1abe8f](https://github.com/filebrowser/filebrowser/commit/c1abe8f561208bf36bde70879d1a15ef9de998fa))
+* keep mobile file sort controls visible ([#5977](https://github.com/filebrowser/filebrowser/issues/5977)) ([0bb2768](https://github.com/filebrowser/filebrowser/commit/0bb2768754d11b865d68e72dcd7cebb232a6308a))
+* skip inaccessible children when listing directories ([#5958](https://github.com/filebrowser/filebrowser/issues/5958)) ([7b7ff8a](https://github.com/filebrowser/filebrowser/commit/7b7ff8ae8f97393b2e6ae6e061c1f780077c32b6))
+
+## [2.63.11](https://github.com/filebrowser/filebrowser/compare/v2.63.10...v2.63.11) (2026-06-04)
+
+
+### Bug Fixes
+
+* incomplete fix for symlinked directories let scopes users and public-share recipients read and write files outside of scope ([3471ec2](https://github.com/filebrowser/filebrowser/commit/3471ec2c4b6473831c72ee889cb3c1a6849a1fb1))
+
+## [2.63.10](https://github.com/filebrowser/filebrowser/compare/v2.63.9...v2.63.10) (2026-06-03)
+
+
+### Bug Fixes
+
+* allow writes when user scope resolves to filesystem root ([6b04cbf](https://github.com/filebrowser/filebrowser/commit/6b04cbf5e9db1f5b9c0b1624843607ce2881cfc4))
+
+## [2.63.9](https://github.com/filebrowser/filebrowser/compare/v2.63.8...v2.63.9) (2026-06-03)
+
+
+### Bug Fixes
+
+* force octet-stream for attachment downloads ([#5942](https://github.com/filebrowser/filebrowser/issues/5942)) ([103acd1](https://github.com/filebrowser/filebrowser/commit/103acd15fe57554fe0246bfe70a49b6cb4ae0c51))
+* prevent symlink scope escape in copy/move/rename ([cdd666f](https://github.com/filebrowser/filebrowser/commit/cdd666fc95f569ad583c32391e45646fed676dfd))
+* set X-Content-Type-Options: nosniff on raw file responses ([35db07d](https://github.com/filebrowser/filebrowser/commit/35db07d0159c520a6b3c969ac52033593914fadd))
+* use constant-time comparison for share access token ([1951436](https://github.com/filebrowser/filebrowser/commit/19514367adf2d9fe5be2b7666e397979ea679b94))
+
+## [2.63.8](https://github.com/filebrowser/filebrowser/compare/v2.63.7...v2.63.8) (2026-06-03)
+
+
+### Bug Fixes
+
+* check if share is within scope when creating ([ca019ae](https://github.com/filebrowser/filebrowser/commit/ca019ae7d966a7c28de2b2341271cd13e3458ae6))
+
+## [2.63.7](https://github.com/filebrowser/filebrowser/compare/v2.63.6...v2.63.7) (2026-06-03)
+
+
+### Bug Fixes
+
+* disallow shares for non-existent paths ([166583d](https://github.com/filebrowser/filebrowser/commit/166583db632e088e9f0adce30aec43bb9d9019f4))
+
+## [2.63.6](https://github.com/filebrowser/filebrowser/compare/v2.63.5...v2.63.6) (2026-06-03)
+
+
+### Bug Fixes
+
+* address three security disclosures (archive traversal, login DoS, symlink escape) ([847d08b](https://github.com/filebrowser/filebrowser/commit/847d08bdd135e5c3659f2e6dea2f0cd36617af9b))
+* cross-user unauthorized share-link deletion ([0231b7e](https://github.com/filebrowser/filebrowser/commit/0231b7ebdfbe77a6c54027d30c4856c3fd81ee4d))
+* incorrect access control in public directory shares via rule path rebasing ([e07c59d](https://github.com/filebrowser/filebrowser/commit/e07c59df0b850f5924d5b1683e8609661ddcf534))
+* parse csv files with uneven columns in their rows ([#5965](https://github.com/filebrowser/filebrowser/issues/5965)) ([5328e80](https://github.com/filebrowser/filebrowser/commit/5328e80d2e88d1c279a1250a7dfee4fc96f703ec))
+* remove undocumented hook auth with shell replacement ([34ae34e](https://github.com/filebrowser/filebrowser/commit/34ae34e764d72540c039f1f5ea2ec4c974168c1f))
+
+## [2.63.5](https://github.com/filebrowser/filebrowser/compare/v2.63.4...v2.63.5) (2026-05-21)
+
+
+### Bug Fixes
+
+* **router:** handle undefined catchAll param on root redirect ([#5955](https://github.com/filebrowser/filebrowser/issues/5955)) ([6ad8160](https://github.com/filebrowser/filebrowser/commit/6ad8160aa3309314c1b471c5090b67c824464396))
+
+## [2.63.4](https://github.com/filebrowser/filebrowser/compare/v2.63.3...v2.63.4) (2026-05-17)
+
+
+### Bug Fixes
+
+* show item shares from all users to admins ([#5941](https://github.com/filebrowser/filebrowser/issues/5941)) ([9cc18a8](https://github.com/filebrowser/filebrowser/commit/9cc18a81e3e1b8bf96795bfbe3d83ced294ecfd7))
+
+## [2.63.3](https://github.com/filebrowser/filebrowser/compare/v2.63.2...v2.63.3) (2026-05-05)
+
+
+### Bug Fixes
+
+* correct environment variable in compose.yaml ([#5910](https://github.com/filebrowser/filebrowser/issues/5910)) ([41b801d](https://github.com/filebrowser/filebrowser/commit/41b801d30c736c8ca863e2be6aece7d99e92129e))
+* Fix conflict modal and add a resume transfert option ([#5884](https://github.com/filebrowser/filebrowser/issues/5884)) ([f4e1485](https://github.com/filebrowser/filebrowser/commit/f4e148523e0dc9242081831b53544396f995c611))
+
 ## [2.63.2](https://github.com/filebrowser/filebrowser/compare/v2.63.1...v2.63.2) (2026-04-11)
 
 

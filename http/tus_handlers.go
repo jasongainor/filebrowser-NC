@@ -11,9 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/afero"
-
 	"github.com/filebrowser/filebrowser/v2/files"
+	"github.com/spf13/afero"
 )
 
 // keepUploadActive periodically touches the cache entry to prevent eviction during transfer
@@ -44,6 +43,7 @@ func tusPostHandler(cache UploadCache) handleFunc {
 		if !d.user.Perm.Create || !d.Check(r.URL.Path) {
 			return http.StatusForbidden, nil
 		}
+
 		file, err := files.NewFileInfo(&files.FileOptions{
 			Fs:         d.user.Fs,
 			Path:       r.URL.Path,

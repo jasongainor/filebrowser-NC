@@ -29,6 +29,8 @@
     "rename": "이름 바꾸기",
     "replace": "대체",
     "reportIssue": "문제 보고",
+    "resumeTransfer": "Resume previous transfer",
+    "resumeTransferTooltip": "Skip all conflicting files, except the ones that are smaller on the server as we suppose that their transfert has been interrupted.",
     "save": "저장",
     "schedule": "일정",
     "search": "검색",
@@ -281,6 +283,7 @@
     "currentPassword": "현재 비밀번호"
   },
   "sidebar": {
+    "diskUsed": "{used} of {total} used",
     "help": "도움말",
     "hugoNew": "Hugo New",
     "login": "로그인",
