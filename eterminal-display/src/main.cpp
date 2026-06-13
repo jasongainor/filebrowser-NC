@@ -373,7 +373,20 @@ void renderStatusBar(int top_y) {
   display.print(pager);
 }
 
-int pageSize() { return cfg.library_page_size > 0 ? cfg.library_page_size : 10; }
+// Table geometry — shared so pageSize() and renderToolTable() stay in sync.
+constexpr int TBL_STATUS_H  = 50;  // status bar
+constexpr int TBL_CAPTION_H = 18;  // "Magazine P1-12 / 20" caption
+constexpr int TBL_HEADER_H  = 22;  // column header row
+constexpr int TBL_ROW_H     = 30;  // compact, FIXED — no stretched-tall rows
+inline int tblBodyY() { return TBL_STATUS_H + 4 + TBL_CAPTION_H + TBL_HEADER_H; }
+
+// Rows that fit on one page at the fixed compact row height for the CURRENT
+// orientation. Portrait is much taller, so it packs ~2× the rows instead of
+// stretching a fixed count to fill the screen (which left big gaps per row).
+int pageSize() {
+  int n = (cfg.res_y - tblBodyY()) / TBL_ROW_H;
+  return n < 1 ? 1 : n;
+}
 
 int computeTotalPages() {
   int per = pageSize();
@@ -498,7 +511,8 @@ String libHeaderLabel(const String &name) {
   if (name == "description") return "Description";
   if (name == "diameter") return "Dia";
   if (name == "length") return "Len";
-  if (name == "wear") return "Wear";
+  if (name == "wear" || name == "length_wear") return "LenWr";
+  if (name == "diameter_wear") return "DiaWr";
   return name;
 }
 
@@ -517,8 +531,14 @@ String libCellText(const String &name, JsonObjectConst row) {
     return row["diameter"].isNull() ? String("-") : String((float) row["diameter"], 3);
   if (name == "length")
     return row["length"].isNull() ? String("-") : String((float) row["length"], 3);
-  if (name == "wear")
-    return row["wear"].isNull() ? String("0.000") : String((float) row["wear"], 3);
+  if (name == "wear" || name == "length_wear") {
+    // Backend sends length wear as "wear"; accept "length_wear" too.
+    JsonVariantConst v = row["wear"];
+    if (v.isNull()) v = row["length_wear"];
+    return v.isNull() ? String("0.000") : String(v.as<float>(), 3);
+  }
+  if (name == "diameter_wear")
+    return row["diameter_wear"].isNull() ? String("0.000") : String((float) row["diameter_wear"], 3);
   return "";
 }
 
@@ -527,13 +547,25 @@ String libCellText(const String &name, JsonObjectConst row) {
 // library pages so both look identical. Columns come from cfg.fields; the
 // description column flexes, id/numeric columns are fixed width (sized so all
 // six fit even in portrait at 480px wide).
+// True when the pocket column adds no information — every populated row has
+// tool_number == pocket (an umbrella / carousel changer). Then we hide it so
+// the width goes to useful data. A real remap (side-mount) keeps it.
+bool pocketColumnRedundant(JsonArrayConst arr) {
+  if (arr.isNull()) return true;
+  for (int i = 0; i < (int) arr.size(); i++) {
+    JsonObjectConst row = arr[i].as<JsonObjectConst>();
+    if (row["tool_number"].isNull()) continue;  // empty pocket — ignore
+    int t = row["tool_number"] | -1;
+    int p = row["pocket"] | -2;
+    if (t != p) return false;
+  }
+  return true;
+}
+
 void renderToolTable(JsonArrayConst arr, int start, int end, const char *title) {
   const int margin = 6;
-  const int status_h = 50;
-  const int caption_h = 18;
-  const int header_h = 22;
-  int caption_y = status_h + 4;
-  int table_top = caption_y + caption_h;
+  int caption_y = TBL_STATUS_H + 4;
+  int table_top = caption_y + TBL_CAPTION_H;
 
   display.setFont(&FreeMonoBold9pt7b);
   display.setCursor(margin, caption_y + 13);
@@ -546,18 +578,23 @@ void renderToolTable(JsonArrayConst arr, int start, int end, const char *title) 
     return;
   }
 
-  int nf = cfg.fields_count;
-  if (nf < 1) nf = 1;
-  if (nf > 8) nf = 8;
+  // Effective columns from cfg.fields, dropping "pocket" when redundant.
+  bool hide_pocket = pocketColumnRedundant(arr);
+  String cols[8];
+  int nf = 0;
+  for (int i = 0; i < cfg.fields_count && nf < 8; i++) {
+    if (hide_pocket && cfg.fields[i] == "pocket") continue;
+    cols[nf++] = cfg.fields[i];
+  }
+  if (nf < 1) { cols[0] = "tool_number"; nf = 1; }
 
   // Column widths: id/numeric columns fixed; description flexes to fill.
   int colw[8];
   int fixed_sum = 0, desc_idx = -1;
   for (int i = 0; i < nf; i++) {
-    const String &nm = cfg.fields[i];
-    if (nm == "description") { desc_idx = i; colw[i] = 0; }
-    else if (nm == "pocket" || nm == "tool_number") { colw[i] = 52; fixed_sum += 52; }
-    else { colw[i] = 84; fixed_sum += 84; }
+    if (cols[i] == "description") { desc_idx = i; colw[i] = 0; }
+    else if (cols[i] == "pocket" || cols[i] == "tool_number") { colw[i] = 48; fixed_sum += 48; }
+    else { colw[i] = 72; fixed_sum += 72; }
   }
   int avail = cfg.res_x - 2 * margin;
   if (desc_idx >= 0) {
@@ -571,19 +608,18 @@ void renderToolTable(JsonArrayConst arr, int start, int end, const char *title) 
   int x_right = colx[nf];
   if (x_right > cfg.res_x - margin) x_right = cfg.res_x - margin;
 
-  int per = pageSize();
+  int row_h = TBL_ROW_H;                 // fixed, compact
   int nrows = end - start;
   int header_y = table_top;
-  int body_y = header_y + header_h;
-  int row_h = (cfg.res_y - body_y) / per;  // fixed per page so rows align
-  if (row_h < 16) row_h = 16;
+  int body_y = header_y + TBL_HEADER_H;
+  int text_dy = row_h / 2 + 5;           // vertically center ~13px text in the row
   int table_bottom = body_y + nrows * row_h;
 
   // Header labels (bold).
   display.setFont(&FreeMonoBold9pt7b);
   for (int i = 0; i < nf; i++) {
     display.setCursor(colx[i] + 4, header_y + 16);
-    display.print(fitToWidth(libHeaderLabel(cfg.fields[i]), colw[i] - 8));
+    display.print(fitToWidth(libHeaderLabel(cols[i]), colw[i] - 8));
   }
 
   // Cell values, one line per row, truncated to the column width.
@@ -592,8 +628,8 @@ void renderToolTable(JsonArrayConst arr, int start, int end, const char *title) 
     JsonObjectConst row = arr[start + r].as<JsonObjectConst>();
     int ry = body_y + r * row_h;
     for (int f = 0; f < nf; f++) {
-      display.setCursor(colx[f] + 4, ry + 15);
-      display.print(fitToWidth(libCellText(cfg.fields[f], row), colw[f] - 8));
+      display.setCursor(colx[f] + 4, ry + text_dy);
+      display.print(fitToWidth(libCellText(cols[f], row), colw[f] - 8));
     }
   }
 
