@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git remote add upstream:*)",
+      "Bash(git remote set-url upstream:*)",
+      "Bash(git push upstream:*)",
+      "Bash(git push origin upstream:*)",
+      "Bash(git push https://github.com/filebrowser/filebrowser:*)",
+      "Bash(git push git@github.com:filebrowser/filebrowser:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh repo fork:*)"
+    ]
+  }
+}

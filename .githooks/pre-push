@@ -1,0 +1,22 @@
+#!/bin/sh
+# ─────────────────────────────────────────────────────────────────────────
+# Guardrail: this is a PERMANENTLY DIVERGED FORK.
+#
+# Only ever push to our own repo (jasongainor/filebrowser-NC). Reject any
+# push to a different remote — e.g. the upstream filebrowser/filebrowser — so
+# we can never accidentally push to, or open a PR against, the OG repo.
+#
+# Activate per clone with:   git config core.hooksPath .githooks
+# Fetching / pulling from upstream to sync is unaffected — only PUSHES gate.
+# ─────────────────────────────────────────────────────────────────────────
+remote_url="$2"
+case "$remote_url" in
+  *jasongainor/filebrowser-NC*) exit 0 ;;   # our fork — allowed
+esac
+echo "" >&2
+echo "  ✋ PUSH BLOCKED — '$remote_url' is not our fork." >&2
+echo "     This repo pushes ONLY to jasongainor/filebrowser-NC." >&2
+echo "     Upstream filebrowser/filebrowser is never a push target." >&2
+echo "     See REPO_POLICY.md." >&2
+echo "" >&2
+exit 1

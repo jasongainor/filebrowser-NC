@@ -2,8 +2,10 @@
 
 PlatformIO firmware for the **Seeed reTerminal E1001** (XIAO ESP32-S3 +
 7.5" 800×480 monochrome e-paper). Reads the reconciled per-machine
-tool list from filebrowser-NC and renders it as a 2×10 pocket map plus
-paged library tables.
+tool list from filebrowser-NC and renders it as a paginated magazine
+table (dia/length/wear in aligned columns) — or, optionally, a 2×10
+pocket grid — with three front buttons for paging, refresh, and a
+portrait/landscape rotation toggle.
 
 Fully local — no cloud, no SenseCraft, no TRMNL. WiFi to the LAN, HTTP
 to the filebrowser-NC host, done.
@@ -13,13 +15,23 @@ to the filebrowser-NC host, done.
 - **MCU**: XIAO ESP32-S3 (USB-C, native USB, 8 MB flash).
 - **Panel**: 7.5" 800×480 mono e-paper (Waveshare/GoodDisplay controller),
   driven via SPI + the reTerminal E1001 baseboard's FFC ribbon.
-- **SD slot**: on the baseboard, wired to `D5` chip-select.
-- **Button**: single user button on `D6` (active LOW, internal pull-up).
+- **SD slot**: on the baseboard. Chip-select `GPIO14`; the slot sits behind
+  a load switch on `GPIO16` (`SD_EN`) that firmware **must drive HIGH before
+  `SD.begin()`** or the card never powers up. Shares the SPI bus
+  (SCK `GPIO7` / MISO `GPIO8` / MOSI `GPIO9`) with the panel.
+- **E-paper**: CS `GPIO10` / DC `GPIO11` / RST `GPIO12` / BUSY `GPIO13`
+  (BUSY active-LOW).
+- **Buttons**: three front buttons — `GPIO3` (Refresh; short = re-fetch,
+  long = rotate), `GPIO4` and `GPIO5` (previous / next page) — active-LOW
+  with board pull-ups. (`GPIO3` is a strapping pin; don't hold it at reset.)
 
-Pin numbers come from Seeed's official reTerminal E1001 example for
-`XIAO_ESP32S3` with `EPD_SELECT = 0` (mono panel option). Do not guess
-pins — if you migrate to the tri-color panel option, the pin map
-changes; consult the Seeed cookbook.
+Pin numbers were verified against the official reTerminal E1001 V1.2
+schematic, Seeed's `Seeed_GFX` example, and the Zephyr board DTS — the
+earlier "from Seeed's example" values were guessed and every one was wrong.
+These are raw ESP32-S3 GPIO numbers, **not** XIAO `Dx` macros;
+`src/main.cpp` is the authoritative map. Serial requires
+`ARDUINO_USB_CDC_ON_BOOT=0` (logs route to the UART0 bridge — there is no
+`usbmodem` on this board).
 
 ## First flash (USB-C, one time)
 
