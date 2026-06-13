@@ -118,7 +118,7 @@ const (
 // DefaultDisplayFields is the order the firmware should render library
 // columns when Display.Fields is empty.
 var DefaultDisplayFields = []string{
-	"pocket", "tool_number", "description", "diameter", "length", "wear",
+	"pocket", "tool_number", "description", "diameter", "length", "wear", "diameter_wear",
 }
 
 // Resolved returns the Display with all zero-value layout fields

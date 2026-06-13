@@ -26,9 +26,10 @@ type ToolListPocket struct {
 	Pocket      int      `json:"pocket"`
 	ToolNumber  *int     `json:"tool_number"`
 	Description string   `json:"description,omitempty"`
-	Diameter    *float64 `json:"diameter,omitempty"`
-	Length      *float64 `json:"length,omitempty"`
-	Wear        *float64 `json:"wear,omitempty"`
+	Diameter     *float64 `json:"diameter,omitempty"`
+	Length       *float64 `json:"length,omitempty"`
+	Wear         *float64 `json:"wear,omitempty"`           // length wear (alias of length_wear)
+	DiameterWear *float64 `json:"diameter_wear,omitempty"`
 }
 
 // ToolListLibraryEntry is one row in the reconciled library. Includes
@@ -39,10 +40,11 @@ type ToolListLibraryEntry struct {
 	ToolNumber  int      `json:"tool_number"`
 	Pocket      int      `json:"pocket"`
 	Description string   `json:"description,omitempty"`
-	Diameter    *float64 `json:"diameter,omitempty"`
-	Length      *float64 `json:"length,omitempty"`
-	Wear        *float64 `json:"wear,omitempty"`
-	Offline     bool     `json:"offline"`
+	Diameter     *float64 `json:"diameter,omitempty"`
+	Length       *float64 `json:"length,omitempty"`
+	Wear         *float64 `json:"wear,omitempty"`           // length wear (alias of length_wear)
+	DiameterWear *float64 `json:"diameter_wear,omitempty"`
+	Offline      bool     `json:"offline"`
 }
 
 // ToolListMachine is the bare-bones machine identity envelope. Kept
@@ -120,6 +122,7 @@ func BuildToolList(
 			row.Diameter = cloneNonZeroPtr(s.EffectiveDiameter)
 			row.Length = cloneNonZeroPtr(s.EffectiveLength)
 			row.Wear = cloneNonZeroPtr(s.LengthWear)
+			row.DiameterWear = cloneNonZeroPtr(s.DiameterWear)
 		}
 		out.Pockets = append(out.Pockets, row)
 	}
@@ -137,9 +140,10 @@ func BuildToolList(
 			ToolNumber:  n,
 			Pocket:      n, // carousel
 			Description: describeSlot(s, library, n),
-			Diameter:    cloneNonZeroPtr(s.EffectiveDiameter),
-			Length:      cloneNonZeroPtr(s.EffectiveLength),
-			Wear:        cloneNonZeroPtr(s.LengthWear),
+			Diameter:     cloneNonZeroPtr(s.EffectiveDiameter),
+			Length:       cloneNonZeroPtr(s.EffectiveLength),
+			Wear:         cloneNonZeroPtr(s.LengthWear),
+			DiameterWear: cloneNonZeroPtr(s.DiameterWear),
 			Offline:     len(s.Errors) > 0,
 		}
 		// All-zero rows are the controller's default for never-touched
