@@ -92,7 +92,42 @@ func buildMachineToolList(registry *cnc.Registry, d *data, machineID string) (*c
 		tbl,
 		lib,
 	)
+
+	// Enrich: geometry-resolved identity (fixes the by-number mislabel),
+	// reserved/gauge tagging, honest freshness, and the active cut config.
+	// Reconciliation is additive — the base wire fields are unchanged.
+	in := cnc.ReconcileInputs{
+		Reserved:      reservedSpecs(m),
+		FallbackTolIn: m.EffectivePositionTolerance(),
+	}
+	if store := registry.CutConfigStore(); store != nil {
+		cfg, stale := store.Current()
+		in.CutConfig = cfg
+		in.CutConfigName = store.Name()
+		in.CutConfigStale = stale
+	}
+	out = cnc.BuildReconciledToolList(out, tbl, in)
 	return out, http.StatusOK, nil
+}
+
+// reservedSpecs translates the machine's reserved-tool registry into the cnc
+// layer's settings-free shape.
+func reservedSpecs(m *settings.Machine) []cnc.ReservedSpec {
+	rt := m.EffectiveReservedTools()
+	if len(rt) == 0 {
+		return nil
+	}
+	out := make([]cnc.ReservedSpec, len(rt))
+	for i, r := range rt {
+		out[i] = cnc.ReservedSpec{
+			Pocket:      r.Pocket,
+			Kind:        r.Kind,
+			ExpectedDia: r.ExpectedDia,
+			ExpectedLen: r.ExpectedLen,
+			Tol:         r.Tol,
+		}
+	}
+	return out
 }
 
 // effectiveUnits returns "in" or "mm". No per-machine "units" field
