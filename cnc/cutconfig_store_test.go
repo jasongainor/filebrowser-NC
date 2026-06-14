@@ -111,3 +111,39 @@ func TestFileCutConfigSource(t *testing.T) {
 		t.Errorf("missing file should not be an error: %q", missing.LastError())
 	}
 }
+
+func TestCutConfigStoreReplaceAndClear(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "active.cutconfig")
+	st := NewCutConfigStore(FileCutConfigSource{Path: path})
+	if cfg, _ := st.Current(); cfg != nil {
+		t.Fatal("should start with no config")
+	}
+
+	// Upload installs + persists + reloads.
+	cfg, err := st.Replace(syntheticCutConfigBytes(t))
+	if err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	if cfg.Name != "Test Alloy" {
+		t.Errorf("name = %q", cfg.Name)
+	}
+	if cur, stale := st.Current(); cur == nil || stale || cur.Name != "Test Alloy" {
+		t.Errorf("after replace: cur=%v stale=%v", cur, stale)
+	}
+
+	// A bad upload is rejected and leaves the good config in place.
+	if _, err := st.Replace([]byte("not a zip")); err == nil {
+		t.Error("garbage upload should be rejected")
+	}
+	if cur, _ := st.Current(); cur == nil || cur.Name != "Test Alloy" {
+		t.Error("good config lost after a rejected upload")
+	}
+
+	// Clear removes it.
+	if err := st.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	if cur, _ := st.Current(); cur != nil {
+		t.Error("config should be gone after Clear")
+	}
+}

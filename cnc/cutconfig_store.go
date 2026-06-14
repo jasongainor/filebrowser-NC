@@ -10,6 +10,7 @@ package cnc
 // parse and marks it stale, rather than going empty.
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,7 +63,8 @@ func (s FileCutConfigSource) Load() (*CutConfig, error) {
 
 // CutConfigStore caches the parsed config. Safe for concurrent use.
 type CutConfigStore struct {
-	src CutConfigSource
+	src       CutConfigSource
+	writePath string // file path for uploads/clear; empty when source isn't a file
 
 	mu       sync.RWMutex
 	cfg      *CutConfig
@@ -77,8 +79,57 @@ type CutConfigStore struct {
 // via LastError until the source becomes readable.
 func NewCutConfigStore(src CutConfigSource) *CutConfigStore {
 	s := &CutConfigStore{src: src}
+	if fs, ok := src.(FileCutConfigSource); ok {
+		s.writePath = fs.Path
+	}
 	s.reload()
 	return s
+}
+
+// Replace validates raw .cutconfig ZIP bytes, persists them to the source
+// path, and reloads. The admin upload entry point. A bad upload leaves the
+// previous config in place.
+func (s *CutConfigStore) Replace(raw []byte) (*CutConfig, error) {
+	cfg, err := ParseCutConfig(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	path := s.writePath
+	s.mu.RUnlock()
+	if path == "" {
+		return nil, fmt.Errorf("cut config source is not a writable file")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return nil, err
+	}
+	s.reload()
+	return cfg, nil
+}
+
+// Clear removes the active cut config (file + in-memory state).
+func (s *CutConfigStore) Clear() error {
+	s.mu.Lock()
+	path := s.writePath
+	s.cfg = nil
+	s.token = ""
+	s.stale = false
+	s.lastErr = ""
+	s.mu.Unlock()
+	if path == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // Current returns the active cut config (nil when none configured / not yet
