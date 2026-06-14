@@ -26,6 +26,7 @@
 #include <SPI.h>
 #include <Update.h>
 #include <WiFi.h>
+#include <time.h>
 #include <GxEPD2_BW.h>
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include <Fonts/FreeMono9pt7b.h>
@@ -125,6 +126,16 @@ int g_rotation = -1;
 unsigned long last_good_fetch_ms = 0;
 bool serving_cache = false;
 String last_updated_display = "";
+
+// Reconciliation payload extras — absent on older backends, so every consumer
+// degrades gracefully to the pre-reconciliation behaviour.
+bool g_have_freshness = false;
+long g_table_read_unix = 0;     // epoch of the tool-table read (for live age via SNTP)
+long g_age_seconds = -1;        // server-computed age, used until NTP syncs
+bool g_freshness_complete = true;
+String g_cutconfig_name = "";
+bool g_cutconfig_stale = false;
+String g_worst_severity = "";   // "", info, warning, action, stop
 
 // Forward decls — renderStatusBar() calls computeTotalPages() which is
 // defined further down; one-pass C++ parser needs the prototype.
@@ -284,6 +295,11 @@ bool connectWiFi() {
     return false;
   }
   logf("WiFi: connected, IP %s", WiFi.localIP().toString().c_str());
+  // SNTP so the device can compute the tool table's TRUE age locally — a
+  // cached payload's server-computed age would otherwise freeze. UTC only;
+  // we render a relative age ("4h ago"), never a wall clock, so there's no
+  // timezone handling and no RTC needed.
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
   return true;
 }
 
@@ -349,25 +365,64 @@ bool fetchPayload() {
 // All rendering writes to GxEPD2's internal buffer; we then page+flush.
 // Each render is a full-screen redraw so ghosting is bounded; every
 // 12th render we force a full clear/refresh to scrub any residual.
+// humanAge renders the tool-table read age relative ("4h ago"), computed
+// live from SNTP when synced (so a cached payload doesn't freeze), else from
+// the server-provided age_seconds, else the old absolute string.
+String humanAge() {
+  long age = -1;
+  time_t now = time(nullptr);
+  if (now > 1700000000L && g_table_read_unix > 0) { // NTP synced (post-2023)
+    age = (long) (now - g_table_read_unix);
+  } else if (g_age_seconds >= 0) {
+    age = g_age_seconds;
+  }
+  if (age < 0) return last_updated_display;
+  if (age < 60) return "just now";
+  if (age < 3600) return String(age / 60) + "m ago";
+  if (age < 86400) return String(age / 3600) + "h ago";
+  return String(age / 86400) + "d ago";
+}
+
 void renderStatusBar(int top_y) {
-  // Top row: machine name + connected dot · last_updated · page x/N
+  bool severe = (g_worst_severity == "action" || g_worst_severity == "stop");
+
+  // Top row: machine + connected, OR an inverted severity banner.
+  if (severe) {
+    display.fillRect(0, top_y, cfg.res_x, 18, GxEPD_BLACK);
+    display.setTextColor(GxEPD_WHITE);
+  }
   display.setFont(&FreeMonoBold9pt7b);
   display.setCursor(8, top_y + 14);
   display.print(machine_name);
-  display.print(serving_cache ? " [SERVER OFFLINE - cached]"
-                : (machine_connected ? " [connected]"
-                                     : " [disconnected]"));
+  if (severe) {
+    display.print(g_worst_severity == "stop" ? "  STOP - DO NOT RUN" : "  ACTION REQUIRED");
+  } else {
+    display.print(serving_cache ? " [SERVER OFFLINE - cached]"
+                  : (machine_connected ? " [connected]"
+                                       : " [disconnected]"));
+  }
+  display.setTextColor(GxEPD_BLACK);
 
+  // Second row: honest tool-table age (+ partial flag) and the active cut
+  // config (a material mismatch is then visible at a glance).
   display.setFont(&FreeMono9pt7b);
   display.setCursor(8, top_y + 30);
-  display.print("updated ");
-  display.print(last_updated_display);
+  if (g_have_freshness) {
+    display.print("read ");
+    display.print(humanAge());
+    if (!g_freshness_complete) display.print(" (partial)");
+  } else {
+    display.print("updated ");
+    display.print(last_updated_display);
+  }
+  if (g_cutconfig_name.length()) {
+    String cc = " \xB7 cfg:" + g_cutconfig_name;
+    if (g_cutconfig_stale) cc += "*";
+    display.print(cc);
+  }
 
   int total_pages = computeTotalPages();
-  String pager = "page " + String(current_page + 1) +
-                 " / " + String(total_pages);
-  // Right-align to the screen width with a 12px margin. Each char is
-  // ~10px in the 9pt font; subtract a back-of-envelope width.
+  String pager = "page " + String(current_page + 1) + " / " + String(total_pages);
   int w = pager.length() * 10;
   display.setCursor(cfg.res_x - w - 12, top_y + 30);
   display.print(pager);
@@ -701,6 +756,18 @@ void renderAll() {
       machine_name = (const char *) (data["machine"]["name"] | "");
       machine_connected = data["machine"]["connected"] | false;
       last_updated_display = (const char *) (data["last_updated_display"] | "");
+
+      g_worst_severity = (const char *) (data["worst_severity"] | "");
+      JsonObjectConst fr = data["freshness"];
+      g_have_freshness = !fr.isNull();
+      if (g_have_freshness) {
+        g_table_read_unix = fr["table_read_unix"] | 0L;
+        g_age_seconds = fr["age_seconds"] | -1L;
+        g_freshness_complete = fr["complete"] | true;
+      }
+      JsonObjectConst cc = data["cutconfig"];
+      g_cutconfig_name = (const char *) (cc["name"] | "");
+      g_cutconfig_stale = cc["stale"] | false;
     }
   }
 
