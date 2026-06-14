@@ -106,13 +106,13 @@ type Display struct {
 // rewrite the stored Display — admins editing the JSON can leave a
 // field empty to mean "use the default."
 const (
-	DefaultDisplayResX                = 800
-	DefaultDisplayResY                = 480
-	DefaultDisplayPocketCols          = 2
-	DefaultDisplayPocketRows          = 10
-	DefaultDisplayLibraryPageSize     = 20
-	DefaultDisplayPollPoweredSeconds  = 60
-	DefaultDisplayPollBatterySeconds  = 900
+	DefaultDisplayResX               = 800
+	DefaultDisplayResY               = 480
+	DefaultDisplayPocketCols         = 2
+	DefaultDisplayPocketRows         = 10
+	DefaultDisplayLibraryPageSize    = 20
+	DefaultDisplayPollPoweredSeconds = 60
+	DefaultDisplayPollBatterySeconds = 900
 )
 
 // DefaultDisplayFields is the order the firmware should render library
@@ -162,9 +162,10 @@ func (d Display) Resolved() Display {
 //
 // Categories is a list of opt-in event types — empty list disables
 // notifications even when the token is set. Known values:
-//   "machine_info"     — status changes (running on/off, recovery)
-//   "failures"         — alarms / errors / dial failures
-//   "operation_starts" — Send or Attach initiated from the dashboard
+//
+//	"machine_info"     — status changes (running on/off, recovery)
+//	"failures"         — alarms / errors / dial failures
+//	"operation_starts" — Send or Attach initiated from the dashboard
 type DiscordConfig struct {
 	BotToken   string   `json:"botToken,omitempty"`
 	ChannelID  string   `json:"channelId,omitempty"`
@@ -255,6 +256,13 @@ type Machine struct {
 	// all tools" was on but the probe slot wasn't excluded. This list
 	// makes the exclusion visually obvious next to the tool readout.
 	NoProbeSlots []int `json:"noProbeSlots,omitempty"`
+
+	// ReservedTools marks pockets that hold non-cut-config hardware — the
+	// gauge/master tool, the work probe, a spot/spare — so tool
+	// reconciliation labels them honestly instead of geometry-matching them
+	// against the cut config, and watches a gauge pocket for drift off its
+	// master dimensions. Peer to NoProbeSlots; empty by default.
+	ReservedTools []ReservedTool `json:"reservedTools,omitempty"`
 }
 
 // IsNoProbeSlot reports whether slot n is in the no-probe list.
@@ -323,6 +331,62 @@ func (m Machine) EffectiveToolSlots() int {
 		return 200
 	}
 	return m.ToolSlots
+}
+
+// Reserved-tool kinds.
+const (
+	ReservedKindGauge     = "gauge"      // master tool that calibrates the tool setter
+	ReservedKindWorkProbe = "work_probe" // spindle work probe (length-only)
+	ReservedKindSpot      = "spot"       // spotting / centre tool kept loaded
+	ReservedKindSpare     = "spare"      // intentionally reserved standby pocket
+)
+
+// DefaultReservedTol is the gauge-drift tolerance (inches) when a ReservedTool
+// leaves Tol at 0. A gauge that has drifted more than two thou off its master
+// dimensions invalidates the tool-setter → work-probe calibration chain, so
+// every downstream measurement becomes suspect.
+const DefaultReservedTol = 0.002
+
+// ReservedTool marks a magazine pocket holding non-cut-config hardware.
+// Reserved pockets are excluded from cut-config geometry matching; a gauge
+// pocket is additionally watched for drift off ExpectedDia/ExpectedLen.
+type ReservedTool struct {
+	Pocket      int      `json:"pocket"`
+	Kind        string   `json:"kind"` // gauge | work_probe | spot | spare
+	ExpectedDia *float64 `json:"expectedDia,omitempty"`
+	ExpectedLen *float64 `json:"expectedLen,omitempty"`
+	// Tol is the per-dimension gauge-drift tolerance in inches. 0 → DefaultReservedTol.
+	Tol float64 `json:"tol,omitempty"`
+}
+
+// EffectiveReservedTools returns the reserved tools with Tol defaulted where
+// unset. Does not mutate the stored slice.
+func (m Machine) EffectiveReservedTools() []ReservedTool {
+	if len(m.ReservedTools) == 0 {
+		return nil
+	}
+	out := make([]ReservedTool, len(m.ReservedTools))
+	copy(out, m.ReservedTools)
+	for i := range out {
+		if out[i].Tol <= 0 {
+			out[i].Tol = DefaultReservedTol
+		}
+	}
+	return out
+}
+
+// ReservedToolAt returns the reserved-tool entry for pocket n (Tol defaulted),
+// if any. Linear scan — the list is a handful of entries.
+func (m Machine) ReservedToolAt(n int) (ReservedTool, bool) {
+	for _, r := range m.ReservedTools {
+		if r.Pocket == n {
+			if r.Tol <= 0 {
+				r.Tol = DefaultReservedTol
+			}
+			return r, true
+		}
+	}
+	return ReservedTool{}, false
 }
 
 // EnsureMigrated folds legacy single-machine fields into Machines[0]
