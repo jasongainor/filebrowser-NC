@@ -15,6 +15,8 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path"
+	"strings"
 
 	"github.com/gorilla/mux"
 
@@ -53,9 +55,10 @@ func buildMachineToolList(registry *cnc.Registry, d *data, machineID string) (*c
 	if ag, _ := registry.Aggregator(m.ID); ag != nil {
 		connected = ag.IsAwake()
 	}
+	var streamerStatus cnc.Status
 	if st, _ := registry.Streamer(m.ID); st != nil {
-		status := st.Status()
-		if status.HaasLastError != "" {
+		streamerStatus = st.Status()
+		if streamerStatus.HaasLastError != "" {
 			connected = false
 		}
 	}
@@ -106,6 +109,33 @@ func buildMachineToolList(registry *cnc.Registry, d *data, machineID string) (*c
 		in.CutConfigName = store.Name()
 		in.CutConfigStale = stale
 	}
+
+	// Bound program → its tool intent (drives program_subset + the
+	// dia_mismatch overlay). A running job wins over a manual/auto attach.
+	boundFile := ""
+	if streamerStatus.Running && streamerStatus.FilePath != "" {
+		boundFile = streamerStatus.FilePath
+	} else if streamerStatus.AttachedFile != "" {
+		boundFile = streamerStatus.AttachedFile
+	}
+	if boundFile != "" && d.user != nil {
+		clean := path.Clean(ensureLeading(boundFile))
+		if !strings.Contains(clean, "..") {
+			if pf, err := cnc.BuildPreflight(d.user.FullPath(clean), clean, m.ID, tbl, currentSpindleTool(registry, m.ID)); err == nil {
+				prog := &cnc.ProgramIntent{Attached: true, AttachedONumber: path.Base(clean)}
+				for _, tu := range pf.Tools {
+					prog.Tools = append(prog.Tools, cnc.ProgramToolIntent{
+						Tool:                 tu.Tool,
+						ExpectedDiameter:     tu.ExpectedDiameter,
+						ExpectedCornerRadius: tu.ExpectedCornerRadius,
+						UsesCutterComp:       tu.UsesCutterComp,
+					})
+				}
+				in.Program = prog
+			}
+		}
+	}
+
 	out = cnc.BuildReconciledToolList(out, tbl, in)
 	return out, http.StatusOK, nil
 }
