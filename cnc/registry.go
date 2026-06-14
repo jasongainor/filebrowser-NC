@@ -28,6 +28,7 @@ type Registry struct {
 	queues      *QueueStore
 	notifier    *Notifier
 	library     *LibraryStore
+	cutConfig   *CutConfigStore
 	bgCtx       context.Context
 	bgCancel    context.CancelFunc
 }
@@ -55,6 +56,10 @@ func NewRegistry(s settingsReader) *Registry {
 	if ls, err := NewLibraryStore(""); err == nil {
 		r.library = ls
 	}
+	// Cut config drives geometry-based tool reconciliation. Best-effort: with
+	// no .cutconfig present the store stays empty and reconciliation runs in
+	// its neutral (no-config) mode.
+	r.cutConfig = NewCutConfigStore(FileCutConfigSource{Path: resolveCutConfigPath()})
 	r.notifier = NewNotifier(s)
 	r.Refresh()
 	return r
@@ -71,6 +76,10 @@ func (r *Registry) Queues() *QueueStore { return r.queues }
 // LibraryStore returns the shared tool-library store. May be nil
 // when persistence failed at boot.
 func (r *Registry) LibraryStore() *LibraryStore { return r.library }
+
+// CutConfigStore returns the shared cut-config store (the geometry catalog for
+// tool reconciliation). May be nil; callers nil-check.
+func (r *Registry) CutConfigStore() *CutConfigStore { return r.cutConfig }
 
 // Refresh diffs settings.Cnc.Machines against the live registry,
 // adding pairs for new IDs and stopping pairs for removed ones.
