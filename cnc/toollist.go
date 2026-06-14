@@ -23,13 +23,20 @@ import (
 // the machine's range is included — empty pockets carry ToolNumber=nil
 // (omitted as null on the JSON wire).
 type ToolListPocket struct {
-	Pocket      int      `json:"pocket"`
-	ToolNumber  *int     `json:"tool_number"`
-	Description string   `json:"description,omitempty"`
+	Pocket       int      `json:"pocket"`
+	ToolNumber   *int     `json:"tool_number"`
+	Description  string   `json:"description,omitempty"`
 	Diameter     *float64 `json:"diameter,omitempty"`
 	Length       *float64 `json:"length,omitempty"`
-	Wear         *float64 `json:"wear,omitempty"`           // length wear (alias of length_wear)
+	Wear         *float64 `json:"wear,omitempty"` // length wear (alias of length_wear)
 	DiameterWear *float64 `json:"diameter_wear,omitempty"`
+
+	// Reconciliation overlay — set by BuildReconciledToolList, omitted by the
+	// base BuildToolList so the existing wire shape is unchanged.
+	Status       string      `json:"status,omitempty"`
+	Reasons      []string    `json:"reasons,omitempty"`
+	ReservedKind string      `json:"reserved_kind,omitempty"`
+	Catalog      *CatalogRef `json:"catalog,omitempty"`
 }
 
 // ToolListLibraryEntry is one row in the reconciled library. Includes
@@ -37,14 +44,19 @@ type ToolListPocket struct {
 // three fields are 0" rows — those are unassigned offsets the operator
 // has never touched.
 type ToolListLibraryEntry struct {
-	ToolNumber  int      `json:"tool_number"`
-	Pocket      int      `json:"pocket"`
-	Description string   `json:"description,omitempty"`
+	ToolNumber   int      `json:"tool_number"`
+	Pocket       int      `json:"pocket"`
+	Description  string   `json:"description,omitempty"`
 	Diameter     *float64 `json:"diameter,omitempty"`
 	Length       *float64 `json:"length,omitempty"`
-	Wear         *float64 `json:"wear,omitempty"`           // length wear (alias of length_wear)
+	Wear         *float64 `json:"wear,omitempty"` // length wear (alias of length_wear)
 	DiameterWear *float64 `json:"diameter_wear,omitempty"`
 	Offline      bool     `json:"offline"`
+
+	Status       string      `json:"status,omitempty"`
+	Reasons      []string    `json:"reasons,omitempty"`
+	ReservedKind string      `json:"reserved_kind,omitempty"`
+	Catalog      *CatalogRef `json:"catalog,omitempty"`
 }
 
 // ToolListMachine is the bare-bones machine identity envelope. Kept
@@ -64,6 +76,13 @@ type ToolList struct {
 	Units              string                 `json:"units"`
 	Pockets            []ToolListPocket       `json:"pockets"`
 	Library            []ToolListLibraryEntry `json:"library"`
+
+	// Reconciliation additions — set by BuildReconciledToolList.
+	CutConfig     *ToolListCutConfig     `json:"cutconfig,omitempty"`
+	Freshness     *ToolListFreshness     `json:"freshness,omitempty"`
+	Program       *ToolListProgram       `json:"program,omitempty"`
+	ProgramSubset []ToolListLibraryEntry `json:"program_subset,omitempty"`
+	WorstSeverity string                 `json:"worst_severity,omitempty"`
 }
 
 // BuildToolList reconciles the inputs into a ToolList. Any of the
@@ -137,14 +156,14 @@ func BuildToolList(
 			continue
 		}
 		entry := ToolListLibraryEntry{
-			ToolNumber:  n,
-			Pocket:      n, // carousel
-			Description: describeSlot(s, library, n),
+			ToolNumber:   n,
+			Pocket:       n, // carousel
+			Description:  describeSlot(s, library, n),
 			Diameter:     cloneNonZeroPtr(s.EffectiveDiameter),
 			Length:       cloneNonZeroPtr(s.EffectiveLength),
 			Wear:         cloneNonZeroPtr(s.LengthWear),
 			DiameterWear: cloneNonZeroPtr(s.DiameterWear),
-			Offline:     len(s.Errors) > 0,
+			Offline:      len(s.Errors) > 0,
 		}
 		// All-zero rows are the controller's default for never-touched
 		// offsets. Suppress unless the row carries a description from
