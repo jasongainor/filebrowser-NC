@@ -136,6 +136,7 @@ bool g_freshness_complete = true;
 String g_cutconfig_name = "";
 bool g_cutconfig_stale = false;
 String g_worst_severity = "";   // "", info, warning, action, stop
+bool g_program_attached = false; // a program is bound and has a tool subset
 
 // Forward decls — renderStatusBar() calls computeTotalPages() which is
 // defined further down; one-pass C++ parser needs the prototype.
@@ -445,18 +446,21 @@ int pageSize() {
 
 int computeTotalPages() {
   int per = pageSize();
+  int mag;
   if (cfg.pocket_view == "table") {
-    // Paginated magazine table: one page set over the pockets array.
+    // Paginated magazine table over the pockets array.
     JsonArrayConst pk = payload_doc["data"]["pockets"];
     int n = pk.isNull() ? 0 : (int) pk.size();
-    int p = (n + per - 1) / per;
-    return p < 1 ? 1 : p;
+    mag = (n + per - 1) / per;
+    if (mag < 1) mag = 1;
+  } else {
+    // Cells mode: page 0 is the magazine grid; library tables follow.
+    JsonArrayConst lib = payload_doc["data"]["library"];
+    int n = lib.isNull() ? 0 : (int) lib.size();
+    mag = 1 + (n + per - 1) / per;
   }
-  // Cells mode: page 0 is the magazine grid; library tables follow.
-  JsonArrayConst lib = payload_doc["data"]["library"];
-  int n = lib.isNull() ? 0 : (int) lib.size();
-  int lib_pages = (n + per - 1) / per;
-  return 1 + lib_pages;
+  // When a program is bound, a program-focused page leads the magazine.
+  return g_program_attached ? mag + 1 : mag;
 }
 
 // Truncate s to fit within max_w pixels in the currently-selected font,
@@ -568,6 +572,7 @@ String libHeaderLabel(const String &name) {
   if (name == "length") return "Len";
   if (name == "wear" || name == "length_wear") return "LenWr";
   if (name == "diameter_wear") return "DiaWr";
+  if (name == "status") return "St";
   return name;
 }
 
@@ -594,6 +599,15 @@ String libCellText(const String &name, JsonObjectConst row) {
   }
   if (name == "diameter_wear")
     return row["diameter_wear"].isNull() ? String("0.000") : String((float) row["diameter_wear"], 3);
+  if (name == "status") {
+    const char *s = row["status"] | "";
+    if (s[0] == 0 || strcmp(s, "ok") == 0) return "ok";
+    if (strcmp(s, "gauge_drift") == 0 || strcmp(s, "missing") == 0 ||
+        strcmp(s, "offline") == 0 || strcmp(s, "reserved_called") == 0)
+      return "STOP";
+    if (strcmp(s, "dia_mismatch") == 0) return "DIA!";
+    return "!"; // recommendation_only / not_in_cutconfig / length_mismatch
+  }
   return "";
 }
 
@@ -617,7 +631,8 @@ bool pocketColumnRedundant(JsonArrayConst arr) {
   return true;
 }
 
-void renderToolTable(JsonArrayConst arr, int start, int end, const char *title) {
+void renderToolTable(JsonArrayConst arr, int start, int end, const char *title,
+                     const String *ofields = nullptr, int onf = 0) {
   const int margin = 6;
   int caption_y = TBL_STATUS_H + 4;
   int table_top = caption_y + TBL_CAPTION_H;
@@ -633,13 +648,18 @@ void renderToolTable(JsonArrayConst arr, int start, int end, const char *title) 
     return;
   }
 
-  // Effective columns from cfg.fields, dropping "pocket" when redundant.
-  bool hide_pocket = pocketColumnRedundant(arr);
+  // Columns: an explicit override (the program page) or cfg.fields, dropping
+  // the redundant pocket column on an umbrella changer.
   String cols[8];
   int nf = 0;
-  for (int i = 0; i < cfg.fields_count && nf < 8; i++) {
-    if (hide_pocket && cfg.fields[i] == "pocket") continue;
-    cols[nf++] = cfg.fields[i];
+  if (ofields != nullptr && onf > 0) {
+    for (int i = 0; i < onf && nf < 8; i++) cols[nf++] = ofields[i];
+  } else {
+    bool hide_pocket = pocketColumnRedundant(arr);
+    for (int i = 0; i < cfg.fields_count && nf < 8; i++) {
+      if (hide_pocket && cfg.fields[i] == "pocket") continue;
+      cols[nf++] = cfg.fields[i];
+    }
   }
   if (nf < 1) { cols[0] = "tool_number"; nf = 1; }
 
@@ -648,7 +668,7 @@ void renderToolTable(JsonArrayConst arr, int start, int end, const char *title) 
   int fixed_sum = 0, desc_idx = -1;
   for (int i = 0; i < nf; i++) {
     if (cols[i] == "description") { desc_idx = i; colw[i] = 0; }
-    else if (cols[i] == "pocket" || cols[i] == "tool_number") { colw[i] = 48; fixed_sum += 48; }
+    else if (cols[i] == "pocket" || cols[i] == "tool_number" || cols[i] == "status") { colw[i] = 48; fixed_sum += 48; }
     else { colw[i] = 72; fixed_sum += 72; }
   }
   int avail = cfg.res_x - 2 * margin;
@@ -700,30 +720,56 @@ void renderToolTable(JsonArrayConst arr, int start, int end, const char *title) 
   }
 }
 
-// Dispatch the current page to the right renderer based on pocket_view.
-//  - "table": every page is a slice of the magazine (pockets) table.
-//  - "cells": page 0 is the magazine grid; later pages are library tables.
-void renderCurrentPage() {
+// Program-focused page: just the tools the bound program uses, each with a
+// status mark. Shown as page 0 when a program is attached.
+void renderProgramPage() {
+  JsonArrayConst subset = payload_doc["data"]["program_subset"];
+  int n = subset.isNull() ? 0 : (int) subset.size();
+  int shown = n;
+  if (shown > pageSize()) shown = pageSize(); // one screen for now
+  const char *onum = payload_doc["data"]["program"]["attached_onumber"] | "";
+  char title[64];
+  snprintf(title, sizeof title, "Program %s  (%d tools)", onum, n);
+  static const String pcols[5] = {"status", "tool_number", "description", "diameter", "length"};
+  renderToolTable(subset, 0, shown, title, pcols, 5);
+}
+
+// One magazine/library page (the pre-program views), addressed by page index.
+void renderMagazinePage(int page) {
   int per = pageSize();
   char title[56];
   if (cfg.pocket_view == "table") {
     JsonArrayConst pk = payload_doc["data"]["pockets"];
     int n = pk.isNull() ? 0 : (int) pk.size();
-    int start = current_page * per;
+    int start = page * per;
     int end = start + per;
     if (end > n) end = n;
     snprintf(title, sizeof title, "Magazine  P%d-%d / %d", start + 1, end, n);
     renderToolTable(pk, start, end, title);
-  } else if (current_page == 0) {
+  } else if (page == 0) {
     renderPocketMap();
   } else {
     JsonArrayConst lib = payload_doc["data"]["library"];
     int n = lib.isNull() ? 0 : (int) lib.size();
-    int start = (current_page - 1) * per;
+    int start = (page - 1) * per;
     int end = start + per;
     if (end > n) end = n;
     snprintf(title, sizeof title, "Library  T%d-%d / %d", start + 1, end, n);
     renderToolTable(lib, start, end, title);
+  }
+}
+
+// Dispatch the current page. When a program is bound it leads at page 0; the
+// magazine/library pages follow.
+void renderCurrentPage() {
+  if (g_program_attached) {
+    if (current_page == 0) {
+      renderProgramPage();
+      return;
+    }
+    renderMagazinePage(current_page - 1);
+  } else {
+    renderMagazinePage(current_page);
   }
 }
 
@@ -768,6 +814,11 @@ void renderAll() {
       JsonObjectConst cc = data["cutconfig"];
       g_cutconfig_name = (const char *) (cc["name"] | "");
       g_cutconfig_stale = cc["stale"] | false;
+
+      JsonObjectConst prog = data["program"];
+      JsonArrayConst psub = data["program_subset"];
+      g_program_attached = !prog.isNull() && (prog["attached"] | false) &&
+                           !psub.isNull() && psub.size() > 0;
     }
   }
 
