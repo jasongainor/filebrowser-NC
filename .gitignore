@@ -37,3 +37,8 @@ build/
 
 default.nix
 Dockerfile.dev
+
+# Never commit personal cut configs / Fusion tool libraries — they contain the
+# operator's proprietary tooling. Tests build synthetic fixtures in-code.
+*.cutconfig
+/Aluminum*.json
