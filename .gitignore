@@ -37,3 +37,7 @@ build/
 
 default.nix
 Dockerfile.dev
+
+# host-local agent notes + board config — never commit
+CLAUDE.local.md
+.GitHubBoard/
