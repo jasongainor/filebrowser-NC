@@ -357,25 +357,68 @@
       show(el.viewer);
       el.viewName.innerHTML = "";
       el.viewName.appendChild(document.createTextNode(data.name));
-      el.viewDl.href = apiRoot + "/raw" + encodePath(path);
 
+      var rawURL = apiRoot + "/raw" + encodePath(path);
+      el.viewDl.href = rawURL;
       el.viewBody.innerHTML = "";
-      if (data.type === "text") {
-        // `content` is omitted for an empty file rather than sent as "".
-        var body = typeof data.content === "string" ? data.content : "";
-        el.viewBody.appendChild(document.createTextNode(body));
-      } else {
-        el.viewBody.appendChild(
-          document.createTextNode(
-            "No preview for this file type (" +
-              (data.type || "unknown") +
-              ", " +
-              formatSize(data.size) +
-              ").\nUse Download to open it."
-          )
+
+      // "textImmutable" is the same thing as "text" for our purposes — the
+      // server only distinguishes them by whether the user may edit, and it
+      // fills in .content either way. Treating it as unpreviewable would
+      // blank out every file for a read-only account.
+      if (data.type === "text" || data.type === "textImmutable") {
+        var pre = document.createElement("pre");
+        // .content is omitted for an empty file rather than sent as "".
+        pre.appendChild(
+          document.createTextNode(typeof data.content === "string" ? data.content : "")
         );
+        el.viewBody.appendChild(pre);
+        return;
       }
+
+      if (data.type === "image") {
+        var img = document.createElement("img");
+        img.className = "preview";
+        img.alt = data.name;
+        // inline=true flips Content-Disposition from attachment to inline;
+        // without it Safari offers a download instead of rendering.
+        img.src = rawURL + "?inline=true";
+        el.viewBody.appendChild(img);
+        return;
+      }
+
+      if (data.type === "pdf") {
+        // iOS ships a native PDF viewer, so the file only needs handing to
+        // it. Deliberately a link and not an <iframe>: on iOS 9 a framed PDF
+        // renders page one and refuses to scroll, which looks broken on a
+        // multi-page setup sheet.
+        el.viewBody.appendChild(
+          button(rawURL + "?inline=true", "Open PDF (" + formatSize(data.size) + ")")
+        );
+        return;
+      }
+
+      var note = document.createElement("p");
+      note.className = "note";
+      note.appendChild(
+        document.createTextNode(
+          "No preview for this file type (" +
+            (data.type || "unknown") +
+            ", " +
+            formatSize(data.size) +
+            "). Use Download to open it."
+        )
+      );
+      el.viewBody.appendChild(note);
     });
+  }
+
+  function button(href, label) {
+    var a = document.createElement("a");
+    a.className = "openbtn";
+    a.href = href;
+    a.appendChild(document.createTextNode(label));
+    return a;
   }
 
   function route() {

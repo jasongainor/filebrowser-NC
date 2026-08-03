@@ -226,6 +226,11 @@
 
       #viewbody {
         margin: 0;
+        padding: 0;
+      }
+
+      #viewbody pre {
+        margin: 0;
         padding: 12px;
         font-family: Menlo, Monaco, "Courier New", monospace;
         font-size: 14px;
@@ -233,6 +238,35 @@
         white-space: pre;
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
+      }
+
+      /* Images render natively — iOS 9 has no trouble with JPEG/PNG/GIF. */
+      #viewbody img.preview {
+        display: block;
+        max-width: 100%;
+        height: auto;
+        margin: 0 auto;
+      }
+
+      /* Hand-off button for formats iOS renders in its own viewer (PDF). */
+      .openbtn {
+        display: block;
+        margin: 16px 12px;
+        padding: 16px;
+        border-radius: 4px;
+        background: #2979ff;
+        color: #fff;
+        font-size: 17px;
+        text-align: center;
+        text-decoration: none;
+      }
+
+      .note {
+        margin: 0;
+        padding: 12px;
+        color: #616161;
+        font-size: 15px;
+        white-space: normal;
       }
     </style>
   </head>
@@ -265,7 +299,7 @@
         <a id="viewdl" class="barbtn">Download</a>
         <button type="button" id="viewclose" class="barbtn">Close</button>
       </div>
-      <pre id="viewbody"></pre>
+      <div id="viewbody"></div>
     </div>
 
     <script src="app.js"></script>
