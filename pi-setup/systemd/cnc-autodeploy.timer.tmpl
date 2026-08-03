@@ -1,0 +1,15 @@
+[Unit]
+Description=Check origin/@@DEPLOY_BRANCH@@ for filebrowser-NC updates
+
+[Timer]
+# First check shortly after boot, then every 5 minutes. The check is a git
+# fetch and two rev-parses when nothing has changed, which is cheap enough
+# to run this often and quiet enough not to fill the journal.
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Spread the load if anything else ever lands on the same cadence.
+RandomizedDelaySec=30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

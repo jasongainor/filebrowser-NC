@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="Files" />
+    <title>File Browser</title>
+    <!--
+      Styles are inline, not a <link>, and this is not a style choice.
+      The server sends:
+
+        Content-Security-Policy: default-src 'self'; style-src 'unsafe-inline';
+
+      style-src is stated explicitly, so it does NOT inherit 'self' from
+      default-src — an external stylesheet is blocked outright, while an
+      inline <style> is allowed. Scripts are the mirror image: script-src is
+      absent, falls back to default-src 'self', so app.js must stay external
+      and inline script would be blocked. Do not "tidy" either one.
+    -->
+    <style>
+      /*
+       * Legacy UI stylesheet — targets Safari 9 (iOS 9.2.1, iPad 3).
+       *
+       * Deliberately avoids: flexbox, grid, CSS custom properties, calc(),
+       * position:sticky, viewport units. Safari 9 either lacks these or needs
+       * -webkit- prefixes with buggy behaviour. Plain block/float layout is
+       * boring but renders identically everywhere.
+       *
+       * Touch targets are 44px minimum — an operator is tapping this with
+       * gloves on next to a running machine.
+       */
+
+      html {
+        -webkit-text-size-adjust: 100%;
+      }
+
+      body {
+        margin: 0;
+        padding: 0 0 2em 0;
+        background: #fff;
+        color: #212121;
+        font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+        font-size: 17px;
+        line-height: 1.4;
+      }
+
+      .hidden {
+        display: none;
+      }
+
+      /* ---- top bar ---- */
+
+      #bar {
+        background: #2979ff;
+        color: #fff;
+        padding: 10px 12px;
+        overflow: hidden;
+      }
+
+      #title {
+        font-size: 20px;
+        font-weight: bold;
+        line-height: 34px;
+      }
+
+      .barbtn {
+        float: right;
+        margin-left: 8px;
+        min-height: 34px;
+        padding: 6px 12px;
+        border: 1px solid #fff;
+        border-radius: 4px;
+        background: transparent;
+        color: #fff;
+        font-size: 15px;
+        font-family: inherit;
+        text-decoration: none;
+        cursor: pointer;
+        -webkit-appearance: none;
+      }
+
+      .barbtn:active {
+        background: #1c54b2;
+      }
+
+      /* ---- breadcrumbs ---- */
+
+      #crumbs {
+        padding: 8px 12px;
+        background: #eceff1;
+        border-bottom: 1px solid #cfd8dc;
+        font-size: 15px;
+        word-wrap: break-word;
+      }
+
+      #crumbs a {
+        color: #2979ff;
+        text-decoration: none;
+        display: inline-block;
+        padding: 6px 2px;
+      }
+
+      #crumbs .sep {
+        color: #90a4ae;
+        padding: 0 2px;
+      }
+
+      /* ---- status / errors ---- */
+
+      #status {
+        padding: 10px 12px;
+        color: #616161;
+        font-size: 15px;
+      }
+
+      #status.error {
+        background: #ffebee;
+        color: #c62828;
+      }
+
+      /* ---- listing ---- */
+
+      #list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      #list li {
+        border-bottom: 1px solid #e0e0e0;
+      }
+
+      #list a {
+        display: block;
+        padding: 13px 12px;
+        min-height: 22px;
+        color: #212121;
+        text-decoration: none;
+        overflow: hidden;
+      }
+
+      #list a:active {
+        background: #e3f2fd;
+      }
+
+      .nm {
+        display: block;
+        word-wrap: break-word;
+      }
+
+      .dir .nm {
+        font-weight: bold;
+      }
+
+      .dir .nm:before {
+        content: "\1F4C1\00a0";
+      }
+
+      .file .nm:before {
+        content: "\1F4C4\00a0";
+      }
+
+      .meta {
+        display: block;
+        color: #757575;
+        font-size: 13px;
+      }
+
+      /* ---- login ---- */
+
+      #login {
+        padding: 16px 12px;
+        max-width: 420px;
+      }
+
+      #login label {
+        display: block;
+        margin: 12px 0 4px 0;
+        font-size: 14px;
+        color: #616161;
+      }
+
+      #login input {
+        display: block;
+        width: 100%;
+        padding: 11px 8px;
+        border: 1px solid #b0bec5;
+        border-radius: 4px;
+        font-size: 17px;
+        font-family: inherit;
+        box-sizing: border-box;
+        -webkit-appearance: none;
+      }
+
+      #loginbtn {
+        margin-top: 18px;
+        width: 100%;
+        padding: 13px;
+        border: 0;
+        border-radius: 4px;
+        background: #2979ff;
+        color: #fff;
+        font-size: 17px;
+        font-family: inherit;
+        -webkit-appearance: none;
+      }
+
+      /* ---- file viewer ---- */
+
+      #viewhead {
+        padding: 10px 12px;
+        background: #37474f;
+        color: #fff;
+        overflow: hidden;
+      }
+
+      #viewname {
+        line-height: 34px;
+        word-wrap: break-word;
+      }
+
+      #viewbody {
+        margin: 0;
+        padding: 0;
+      }
+
+      #viewbody pre {
+        margin: 0;
+        padding: 12px;
+        font-family: Menlo, Monaco, "Courier New", monospace;
+        font-size: 14px;
+        line-height: 1.45;
+        white-space: pre;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      /* Images render natively — iOS 9 has no trouble with JPEG/PNG/GIF. */
+      #viewbody img.preview {
+        display: block;
+        max-width: 100%;
+        height: auto;
+        margin: 0 auto;
+      }
+
+      /* Hand-off button for formats iOS renders in its own viewer (PDF). */
+      .openbtn {
+        display: block;
+        margin: 16px 12px;
+        padding: 16px;
+        border-radius: 4px;
+        background: #2979ff;
+        color: #fff;
+        font-size: 17px;
+        text-align: center;
+        text-decoration: none;
+      }
+
+      .note {
+        margin: 0;
+        padding: 12px;
+        color: #616161;
+        font-size: 15px;
+        white-space: normal;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <span id="title">File Browser</span>
+      <button type="button" id="logout" class="barbtn">Sign out</button>
+      <button type="button" id="reload" class="barbtn">Reload</button>
+    </div>
+
+    <div id="crumbs"></div>
+
+    <div id="status"></div>
+
+    <div id="login" class="hidden">
+      <form id="loginform">
+        <label for="user">User</label>
+        <input id="user" type="text" autocapitalize="off" autocorrect="off" />
+        <label for="pass">Password</label>
+        <input id="pass" type="password" />
+        <button type="submit" id="loginbtn">Sign in</button>
+      </form>
+    </div>
+
+    <ul id="list"></ul>
+
+    <div id="viewer" class="hidden">
+      <div id="viewhead">
+        <span id="viewname"></span>
+        <a id="viewdl" class="barbtn">Download</a>
+        <button type="button" id="viewclose" class="barbtn">Close</button>
+      </div>
+      <div id="viewbody"></div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

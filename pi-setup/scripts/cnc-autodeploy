@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+#
+# cnc-autodeploy — poll origin/master and deploy it, unattended.
+#
+# The manual counterpart is cnc-rebuild. This one is what the
+# cnc-autodeploy.timer runs, so it has to be safe with nobody watching:
+# it refuses to act on an unexpected repo state, never leaves the service
+# down on a bad build, and rolls back if the new binary won't serve.
+#
+# Runs as root (systemctl restart needs it) but does all git and build work
+# as the service user, so nothing in the checkout ends up root-owned.
+#
+#   REPO_DIR=/srv/filebrowser-NC BRANCH=main cnc-autodeploy
+
+set -euo pipefail
+
+REPO_DIR=${REPO_DIR:-/home/admin/filebrowser-NC}
+RUN_USER=${RUN_USER:-admin}
+GO_BIN=${GO_BIN:-/usr/local/go/bin/go}
+SERVICE=${SERVICE:-filebrowser}
+BRANCH=${BRANCH:-master}
+HEALTH_URL=${HEALTH_URL:-http://127.0.0.1:8080/health}
+HEALTH_RETRIES=${HEALTH_RETRIES:-10}
+
+log() { echo "cnc-autodeploy: $*"; }
+die() { echo "cnc-autodeploy: $*" >&2; exit 1; }
+
+as_user() { runuser -u "$RUN_USER" -- "$@"; }
+
+[[ -d $REPO_DIR ]] || die "repo not found at $REPO_DIR"
+cd "$REPO_DIR"
+
+# --- refuse to touch anything we do not fully understand -------------------
+#
+# The box is also a place people work by hand. Deploying over a detached
+# HEAD, a feature branch, or uncommitted edits would silently destroy
+# someone's in-progress work, so bail loudly instead. A human running
+# cnc-rebuild is unaffected by any of this.
+
+current_branch=$(as_user git rev-parse --abbrev-ref HEAD)
+if [[ $current_branch != "$BRANCH" ]]; then
+  log "on '$current_branch', not '$BRANCH' — leaving it alone"
+  exit 0
+fi
+
+if [[ -n $(as_user git status --porcelain) ]]; then
+  log "working tree is dirty — refusing to deploy over local changes"
+  exit 0
+fi
+
+# --- is there anything to do? ---------------------------------------------
+
+as_user git fetch --quiet origin "$BRANCH"
+
+local_sha=$(as_user git rev-parse HEAD)
+remote_sha=$(as_user git rev-parse "origin/$BRANCH")
+
+if [[ $local_sha == "$remote_sha" ]]; then
+  exit 0   # up to date; stay quiet so the journal isn't a wall of no-ops
+fi
+
+log "$BRANCH moved ${local_sha:0:8} -> ${remote_sha:0:8}, deploying"
+
+# Whether the frontend needs rebuilding is worth checking rather than
+# assuming: pnpm install + vite build is minutes on a Pi and most backend
+# changes do not touch it at all.
+if as_user git diff --quiet "$local_sha" "$remote_sha" -- frontend/; then
+  rebuild_frontend=0
+  log "frontend unchanged — skipping the pnpm build"
+else
+  rebuild_frontend=1
+fi
+
+as_user git merge --ff-only "origin/$BRANCH"
+
+# --- build ----------------------------------------------------------------
+#
+# Everything builds to a side path first. A compile error must not be able
+# to leave the shop floor without a file server.
+
+if [[ $rebuild_frontend == 1 ]]; then
+  log "building frontend"
+  as_user env -C "$REPO_DIR/frontend" corepack pnpm install --frozen-lockfile --silent
+  as_user env -C "$REPO_DIR/frontend" corepack pnpm run build
+fi
+
+log "building backend"
+as_user "$GO_BIN" build -o filebrowser.new .
+
+# --- swap and restart -----------------------------------------------------
+#
+# mv over a running executable is fine — rename swaps the directory entry
+# and leaves the running inode alone. Writing in place would hit ETXTBSY.
+
+cp -a filebrowser filebrowser.prev
+mv filebrowser.new filebrowser
+systemctl restart "$SERVICE"
+
+# --- prove it actually serves, and undo it if not -------------------------
+
+healthy=0
+for _ in $(seq "$HEALTH_RETRIES"); do
+  sleep 2
+  if curl -fsS --max-time 4 -o /dev/null "$HEALTH_URL"; then
+    healthy=1
+    break
+  fi
+done
+
+if [[ $healthy == 1 ]]; then
+  log "deployed ${remote_sha:0:8} and healthy"
+  exit 0
+fi
+
+log "new binary failed its health check — rolling back"
+mv filebrowser.prev filebrowser
+systemctl restart "$SERVICE"
+
+for _ in $(seq "$HEALTH_RETRIES"); do
+  sleep 2
+  if curl -fsS --max-time 4 -o /dev/null "$HEALTH_URL"; then
+    die "rolled back to the previous binary; ${remote_sha:0:8} is bad"
+  fi
+done
+
+die "ROLLBACK ALSO UNHEALTHY — $SERVICE is down, needs a human"
