@@ -61,6 +61,8 @@ ADMIN_USER="admin"
 ADMIN_PASSWORD="cncadmin1234"   # 12+ chars to satisfy upstream's minimum
 ENABLE_SMB="y"                  # serve $SHARE_PATH as SMB so Finder/Explorer can mount it
 SMB_GUEST="y"                   # no-auth (guest writable) — fine on a shop LAN
+ENABLE_AUTODEPLOY="y"           # poll origin/$DEPLOY_BRANCH and deploy it unattended
+DEPLOY_BRANCH="master"          # branch cnc-autodeploy tracks
 
 # Load existing config if present (overrides the defaults above).
 load_conf || true
@@ -115,6 +117,12 @@ if [[ $ENABLE_SMB == y ]]; then
   ask_yes_no SMB_GUEST "Allow SMB guest access (no password)?" "${SMB_GUEST:-y}"
 fi
 
+# Unattended deploys. Worth being explicit that this means anything reaching
+# the branch lands on the machine next to the mill within minutes — the
+# health check reverts a binary that won't start, but not one that starts and
+# misbehaves. Say no here and cnc-rebuild remains the manual path.
+ask_yes_no ENABLE_AUTODEPLOY "Auto-deploy new commits from origin/${DEPLOY_BRANCH:-master}?" "${ENABLE_AUTODEPLOY:-y}"
+
 # ── Resolve binary location ────────────────────────────────────────────────
 FB_BIN="$REPO_DIR/filebrowser"
 FB_WORKDIR="$REPO_DIR"
@@ -139,7 +147,9 @@ write_conf \
   "ADMIN_USER=$ADMIN_USER" \
   "ADMIN_PASSWORD=$ADMIN_PASSWORD" \
   "ENABLE_SMB=$ENABLE_SMB" \
-  "SMB_GUEST=$SMB_GUEST"
+  "SMB_GUEST=$SMB_GUEST" \
+  "ENABLE_AUTODEPLOY=$ENABLE_AUTODEPLOY" \
+  "DEPLOY_BRANCH=$DEPLOY_BRANCH"
 # Conf has the admin password — restrict to root.
 chmod 0600 "$CONF_PATH" 2>/dev/null || true
 
@@ -158,6 +168,10 @@ ok "cnc-status installed → run \`cnc-status\` any time for a one-shot diagnost
 step "Installing cnc-rebuild deploy script"
 install -m 0755 "$REPO_DIR/pi-setup/scripts/cnc-rebuild" /usr/local/bin/cnc-rebuild
 ok "cnc-rebuild installed → run \`cnc-rebuild\` to pull, rebuild, and restart in one shot"
+
+step "Installing cnc-autodeploy script"
+install -m 0755 "$REPO_DIR/pi-setup/scripts/cnc-autodeploy" /usr/local/bin/cnc-autodeploy
+ok "cnc-autodeploy installed → the timer below runs it; cnc-rebuild stays the manual path"
 
 # ── Mode-specific install ───────────────────────────────────────────────────
 case $MODE in
@@ -251,6 +265,26 @@ if [[ -x $FB_BIN ]]; then
 else
   systemctl daemon-reload
   warn "skipping filebrowser start — binary not built (build step failed?)"
+fi
+
+# ── Unattended deploys (after filebrowser, so the health check has a target) ─
+if [[ ${ENABLE_AUTODEPLOY:-y} == y ]]; then
+  step "Installing cnc-autodeploy timer"
+  render_template "$REPO_DIR/pi-setup/systemd/cnc-autodeploy.service.tmpl" \
+                  /etc/systemd/system/cnc-autodeploy.service \
+                  FB_USER="$FB_USER" \
+                  FB_WORKDIR="$FB_WORKDIR" \
+                  GO_BIN="${GO_BIN:-/usr/local/go/bin/go}" \
+                  DEPLOY_BRANCH="${DEPLOY_BRANCH:-master}" \
+                  AUTODEPLOY_BIN=/usr/local/bin/cnc-autodeploy
+  render_template "$REPO_DIR/pi-setup/systemd/cnc-autodeploy.timer.tmpl" \
+                  /etc/systemd/system/cnc-autodeploy.timer \
+                  DEPLOY_BRANCH="${DEPLOY_BRANCH:-master}"
+  enable_now cnc-autodeploy.timer
+  ok "auto-deploy on — origin/${DEPLOY_BRANCH:-master} deploys within 5 min of landing"
+else
+  systemctl disable --now cnc-autodeploy.timer 2>/dev/null || true
+  ok "auto-deploy off — use \`cnc-rebuild\` to deploy by hand"
 fi
 
 # ── SMB share (after filebrowser, so $SHARE_PATH is owned + populated) ──────
