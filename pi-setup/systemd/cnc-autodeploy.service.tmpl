@@ -1,0 +1,21 @@
+[Unit]
+Description=Deploy origin/@@DEPLOY_BRANCH@@ of filebrowser-NC if it moved
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root, because restarting filebrowser.service needs it. The script drops to
+# @@FB_USER@@ via runuser for every git and build step, so the checkout never
+# picks up root-owned files.
+User=root
+Environment=REPO_DIR=@@FB_WORKDIR@@
+Environment=RUN_USER=@@FB_USER@@
+Environment=GO_BIN=@@GO_BIN@@
+Environment=SERVICE=filebrowser
+Environment=BRANCH=@@DEPLOY_BRANCH@@
+ExecStart=@@AUTODEPLOY_BIN@@
+
+# A build on a Pi is slow but not unbounded; kill it rather than let two
+# runs overlap if something wedges.
+TimeoutStartSec=1800
