@@ -43,6 +43,10 @@ func NewHandler(
 
 	r.HandleFunc("/health", healthHandler)
 	r.PathPrefix("/static").Handler(static)
+	// Browse-only ES5 UI for browsers that cannot run the main bundle.
+	// Must be registered before NotFoundHandler, which swallows everything
+	// else and hands back the Vue index.
+	r.PathPrefix("/legacy").Handler(legacyHandler(server.BaseURL))
 	r.NotFoundHandler = index
 
 	api := r.PathPrefix("/api").Subrouter()
