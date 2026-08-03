@@ -268,6 +268,36 @@
         font-size: 15px;
         white-space: normal;
       }
+
+      /* The editor. A plain textarea rather than a code editor component:
+         ace is ES2015+ and will not parse on Safari 9, but editing an NC
+         program never needed syntax highlighting — it needed a text box and
+         a Save button. autocapitalize/autocorrect are off because iOS will
+         happily "fix" G-code into prose otherwise. */
+      #viewedit {
+        display: block;
+        width: 100%;
+        min-height: 60vh;
+        margin: 0;
+        padding: 12px;
+        border: 0;
+        border-top: 1px solid #e0e0e0;
+        font-family: Menlo, Monaco, "Courier New", monospace;
+        font-size: 14px;
+        line-height: 1.45;
+        box-sizing: border-box;
+        -webkit-appearance: none;
+        resize: none;
+      }
+
+      #viewsave {
+        background: #2e7d32;
+        border-color: #2e7d32;
+      }
+
+      #viewsave[disabled] {
+        opacity: 0.6;
+      }
     </style>
   </head>
   <body>
@@ -298,6 +328,7 @@
         <span id="viewname"></span>
         <a id="viewdl" class="barbtn">Download</a>
         <button type="button" id="viewclose" class="barbtn">Close</button>
+        <button type="button" id="viewsave" class="barbtn hidden">Save</button>
       </div>
       <div id="viewbody"></div>
     </div>

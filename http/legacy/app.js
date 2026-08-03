@@ -14,9 +14,18 @@
  * the server sends `Content-Security-Policy: default-src 'self'` — inline
  * script and onclick= attributes are blocked.
  *
- * Scope is deliberately small: authenticate, walk directories, read text
- * files, download. No upload — iOS 9 predates the Files app and its file
- * input can only reach the photo library, which is useless for NC programs.
+ * Scope: authenticate, walk directories, read and edit text files, view
+ * images, hand PDFs to the native viewer, download.
+ *
+ * Editing is a plain <textarea> rather than ace. Not a compromise — ace is
+ * ES2015+ and cannot parse here, but editing an NC program at the machine
+ * never needed syntax highlighting. It needed a text box and a Save button,
+ * which PUT /api/resources gives us directly.
+ *
+ * No upload — iOS 9 predates the Files app and its file input can only reach
+ * the photo library, which is useless for NC programs. No 3D: the iPad 3 does
+ * support WebGL 1.0, but three.js and online-3d-viewer ship as ES2015+
+ * modules, so reaching it would mean vendoring an ES5-era three.js.
  */
 
 (function () {
@@ -31,6 +40,10 @@
 
   var token = null;
   var currentDir = "/";
+  // Path currently open in the editor, or null when the viewer is showing
+  // something that cannot be saved. Guards Save against firing at the wrong
+  // file if the user navigates mid-edit.
+  var editPath = null;
 
   var el = {
     crumbs: document.getElementById("crumbs"),
@@ -47,7 +60,8 @@
     viewName: document.getElementById("viewname"),
     viewBody: document.getElementById("viewbody"),
     viewDl: document.getElementById("viewdl"),
-    viewClose: document.getElementById("viewclose")
+    viewClose: document.getElementById("viewclose"),
+    viewSave: document.getElementById("viewsave")
   };
 
   /* ---------- small helpers ---------- */
@@ -187,14 +201,19 @@
   // ownAuthErrors skips that automatic bounce, for callers that need to report
   // a rejection themselves — /api/login answers a bad password with 403, which
   // is not an expired session.
-  function request(method, url, body, cb, ownAuthErrors) {
+  function request(method, url, body, cb, opts) {
+    opts = opts || {};
+    var ownAuthErrors = opts.ownAuthErrors;
+
     var xhr = new XMLHttpRequest();
     xhr.open(method, url, true);
     if (token) {
       xhr.setRequestHeader("X-Auth", token);
     }
     if (body !== null) {
-      xhr.setRequestHeader("Content-Type", "application/json");
+      // Saving a file PUTs its raw bytes, not JSON — mislabelling it would
+      // be a lie about the body even though the server only reads the stream.
+      xhr.setRequestHeader("Content-Type", opts.contentType || "application/json");
     }
     xhr.onreadystatechange = function () {
       if (xhr.readyState !== 4) {
@@ -361,17 +380,37 @@
       var rawURL = apiRoot + "/raw" + encodePath(path);
       el.viewDl.href = rawURL;
       el.viewBody.innerHTML = "";
+      hide(el.viewSave);
+      editPath = null;
 
       // "textImmutable" is the same thing as "text" for our purposes — the
       // server only distinguishes them by whether the user may edit, and it
       // fills in .content either way. Treating it as unpreviewable would
       // blank out every file for a read-only account.
-      if (data.type === "text" || data.type === "textImmutable") {
+      // .content is omitted for an empty file rather than sent as "".
+      var body = typeof data.content === "string" ? data.content : "";
+
+      // "text" means the server will accept a PUT from this user;
+      // "textImmutable" is the same file without modify permission. Offering
+      // an editor in the second case would just produce a 403 on save, so
+      // show the read-only view and no Save button.
+      if (data.type === "text") {
+        editPath = path;
+        var ta = document.createElement("textarea");
+        ta.id = "viewedit";
+        ta.value = body;
+        ta.setAttribute("autocapitalize", "off");
+        ta.setAttribute("autocorrect", "off");
+        ta.setAttribute("spellcheck", "false");
+        el.viewBody.appendChild(ta);
+        show(el.viewSave);
+        el.viewSave.disabled = false;
+        return;
+      }
+
+      if (data.type === "textImmutable") {
         var pre = document.createElement("pre");
-        // .content is omitted for an empty file rather than sent as "".
-        pre.appendChild(
-          document.createTextNode(typeof data.content === "string" ? data.content : "")
-        );
+        pre.appendChild(document.createTextNode(body));
         el.viewBody.appendChild(pre);
         return;
       }
@@ -473,7 +512,7 @@
       saveToken(text);
       showBrowser();
       route();
-    }, true);
+    }, { ownAuthErrors: true });
     return false;
   };
 
@@ -485,6 +524,35 @@
 
   el.reload.onclick = function () {
     route();
+  };
+
+  el.viewSave.onclick = function () {
+    var ta = document.getElementById("viewedit");
+    if (!ta || !editPath) {
+      return;
+    }
+
+    var target = editPath;
+    el.viewSave.disabled = true;
+    setStatus("Saving…", false);
+
+    // PUT writes the raw bytes. The server rejects this with 403 unless the
+    // user has modify permission, which is why the editor is only offered
+    // for type "text" and not "textImmutable".
+    request(
+      "PUT",
+      apiRoot + "/resources" + encodePath(target),
+      ta.value,
+      function (err) {
+        el.viewSave.disabled = false;
+        if (err) {
+          setStatus(err, true);
+          return;
+        }
+        setStatus("Saved " + target, false);
+      },
+      { contentType: "text/plain; charset=utf-8" }
+    );
   };
 
   el.viewClose.onclick = function () {
