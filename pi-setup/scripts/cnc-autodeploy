@@ -43,8 +43,13 @@ if [[ $current_branch != "$BRANCH" ]]; then
   exit 0
 fi
 
-if [[ -n $(as_user git status --porcelain) ]]; then
-  log "working tree is dirty — refusing to deploy over local changes"
+# --untracked-files=no is load-bearing. A deploy box accumulates untracked
+# junk as a matter of course — rollback binaries, .new build artifacts,
+# stray logs — and counting those as "dirty" wedges the timer permanently
+# for something that is not anybody's work in progress. Only modifications
+# to tracked files mean a human has edits here worth protecting.
+if [[ -n $(as_user git status --porcelain --untracked-files=no) ]]; then
+  log "tracked files are modified — refusing to deploy over local changes"
   exit 0
 fi
 
