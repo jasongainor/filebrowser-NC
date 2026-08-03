@@ -30,6 +30,23 @@ as_user() { runuser -u "$RUN_USER" -- "$@"; }
 [[ -d $REPO_DIR ]] || die "repo not found at $REPO_DIR"
 cd "$REPO_DIR"
 
+# --- keep the installed copy in step with the repo ------------------------
+#
+# Without this, every fix to *this script* needs a human to scp it into
+# /usr/local/bin, which is the treadmill the timer exists to end. The repo
+# copy arrives with an ordinary deploy, so one run later we notice and
+# install it.
+#
+# Re-exec rather than carrying on: bash reads a script incrementally, so a
+# process whose own file changed underneath it can start executing garbage.
+# cmp settles after one swap, so this cannot loop.
+REPO_SCRIPT="$REPO_DIR/pi-setup/scripts/cnc-autodeploy"
+if [[ -f $REPO_SCRIPT && -w ${BASH_SOURCE[0]} ]] && ! cmp -s "$REPO_SCRIPT" "${BASH_SOURCE[0]}"; then
+  log "installed copy is stale — updating and re-running"
+  install -m 755 "$REPO_SCRIPT" "${BASH_SOURCE[0]}"
+  exec "${BASH_SOURCE[0]}" "$@"
+fi
+
 # --- refuse to touch anything we do not fully understand -------------------
 #
 # The box is also a place people work by hand. Deploying over a detached
