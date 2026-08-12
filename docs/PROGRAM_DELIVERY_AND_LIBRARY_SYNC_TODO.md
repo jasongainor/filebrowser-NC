@@ -125,7 +125,89 @@ telemetry we already depend on. Both are in the catalog
 (`cnc/haas_codes.go`) but neither has been confirmed against the pendant
 this year.
 
-### The path worth pursuing instead: network file drop
+### SOLVED IN PRINCIPLE 2026-08-12 — FNC over Net Share
+
+The mechanism is **FNC**, not DNC. Haas's "File Numeric Control" runs a
+program directly from a *device* — USB stick, the machine's hard drive, or
+**Net Share** — instead of loading it into the control's 1 MB program
+memory. It is the same idea as drip-feed but over a real filesystem rather
+than a serial line.
+
+This collapses the whole problem:
+
+- Post from Fusion straight to the share. The file is on the machine's
+  `LIST PROGRAM → Net Share` tab the moment it is written. No copy step, no
+  thumb drive, no RS-232 receive dance.
+- The remaining operator action is *selecting the program* — which is
+  unavoidable and reasonable, and is nothing like the current "set the
+  control into a receive state, then start a transfer" ritual.
+- It sidesteps the 1 MB memory limit for large programs.
+
+Reference: a shop owner did exactly this on a 2009 Haas OM-2 (a pre-NGC
+control, same generation as ours) using a Raspberry Pi as the file server —
+"Haas FNC with Thumb Drives and Networking for pre NGC Machines via a
+Raspberry Pi". The relevant details from that account:
+
+- **The control speaks SMB1 and nothing else.** That is why a Pi running
+  Samba was used at all: Windows 10 dropped SMB1 by default and he did not
+  want to re-enable it there.
+- Settings live under **Settings → I/O → Networking**: machine name, DHCP
+  on, DNS server, domain/workgroup, **Remote Server**, **Remote Share
+  Path**, and **Net Share tab enabled**.
+- **Press F1 after changing any network setting.** It reads "press F1 to
+  refresh settings" — without it the network processor is never reset and
+  nothing takes effect. This is the step that wastes an afternoon.
+- The control writes diagnostics to an `admin` folder on its hard drive,
+  including an `ipconfig.txt` with its DHCP state, MAC and IP, plus a
+  network-error log. Useful for debugging; **do not delete that folder.**
+- FNC has a shop-forum reputation for being "flaky." He asked Haas directly
+  about FNC over the network on an old control and was told it is fine, and
+  reports no trouble in practice beyond thumb-drive recognition issues.
+  Treat the reputation as unverified folklore, but do not bet a long
+  unattended cut on it before we have run it ourselves.
+- A file selected on a device shows `FNC` next to it and stays locked to
+  that device; pressing SELECT PROGRAM again releases it.
+
+### What we already have
+
+Checked on zinc 2026-08-12 — nearly everything is in place already:
+
+| Piece | State |
+|---|---|
+| Samba installed, `smbd` running | ✅ already active |
+| `[cnc]` share, guest-writable, at the exact folder filebrowser serves | ✅ already exists (`pi-setup/lib/smb_share.sh`) |
+| `nmbd` for NetBIOS name resolution (the "Remote Server Name") | ✅ already running |
+| zinc reachable at `192.168.20.11` on the same LAN as the control | ✅ |
+| **SMB1/NT1 enabled** | ❌ **the only gap** — `server min protocol` is `SMB2_02` |
+
+Samba 4.22 on zinc still accepts `server min protocol = NT1` (verified with
+`testparm` against a scratch config; the live service was not touched). So
+the gap is one config line.
+
+`SMB_LEGACY` was added to `pi-setup/setup-pi.sh` + `lib/smb_share.sh` to
+emit it — **opt-in, defaulting to `n`**, because SMB1 is the protocol family
+EternalBlue targeted and it should not land on every Pi this script
+provisions. Enabling it is a deliberate per-shop decision.
+
+### Remaining steps
+
+1. Apply `SMB_LEGACY=y` on zinc and restart `smbd`. Reversible; one line.
+2. At the pendant: Settings → I/O → Networking. Set Remote Server to
+   `zinc` (or `192.168.20.11`), Remote Share Path to `cnc`, workgroup
+   `WORKGROUP`, enable the Net Share tab — **then F1.**
+3. Verify from the control: `LIST PROGRAM → Net Share` should list the
+   contents of `/home/admin/Desktop/cncFiles`.
+4. Point the Fusion post output directly at the share so posting *is*
+   delivery.
+5. Decide the security posture. SMB1 guest-writable is fine on an isolated
+   shop LAN and is what the share already is; it is the wrong answer if this
+   segment routes anywhere untrusted. Worth confirming the VLAN before
+   leaving it on.
+
+Note this does **not** obsolete the RS-232 bridge — Q-code telemetry, the
+tool table, and DPRNT still ride it. It replaces *file delivery* only.
+
+### The older path, for reference: network file drop
 
 The right shape for "auto send" is **not DNC** — it is putting the file
 where the control can already see it, so the operator's job collapses from

@@ -115,6 +115,12 @@ if [[ $ENABLE_SMB == y ]]; then
   # shop-LAN appliance; wrong answer if the box is exposed to a network
   # you don't trust.
   ask_yes_no SMB_GUEST "Allow SMB guest access (no password)?" "${SMB_GUEST:-y}"
+  # Pre-NGC Haas controls (the "Net Share" tab on a Classic control) speak
+  # ONLY SMB1/NT1. Samba has defaulted to SMB2_02 minimum since 4.11, so a
+  # stock share is invisible to the machine. Answer y ONLY if a legacy
+  # controller has to mount this share — SMB1 is the protocol family behind
+  # EternalBlue/WannaCry and should not be on by default.
+  ask_yes_no SMB_LEGACY "Enable SMB1/NT1 for a pre-NGC Haas Net Share?" "${SMB_LEGACY:-n}"
 fi
 
 # Unattended deploys. Worth being explicit that this means anything reaching
@@ -148,6 +154,7 @@ write_conf \
   "ADMIN_PASSWORD=$ADMIN_PASSWORD" \
   "ENABLE_SMB=$ENABLE_SMB" \
   "SMB_GUEST=$SMB_GUEST" \
+  "SMB_LEGACY=$SMB_LEGACY" \
   "ENABLE_AUTODEPLOY=$ENABLE_AUTODEPLOY" \
   "DEPLOY_BRANCH=$DEPLOY_BRANCH"
 # Conf has the admin password — restrict to root.

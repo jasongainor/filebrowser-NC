@@ -50,6 +50,20 @@ install_smb_share() {
     log "backed up distro smb.conf → ${conf}.cnc-pi.bak"
   fi
 
+  # SMB1/NT1 for legacy controllers. A pre-NGC Haas ("Net Share" tab on a
+  # Classic control) negotiates SMB1 and nothing else; Samba has refused
+  # anything below SMB2_02 by default since 4.11, so the share is simply
+  # invisible to the machine until this is set. Opt-in only — SMB1 is the
+  # protocol family EternalBlue targeted, and it should never be the
+  # default on a box that also faces a normal LAN.
+  #
+  # nmbd matters here too: the Haas asks for a "Remote Server Name", and
+  # NetBIOS is how it resolves one. It is already enabled below.
+  local legacy_proto=''
+  if [[ ${SMB_LEGACY:-n} == y ]]; then
+    legacy_proto=$'   server min protocol = NT1\n   client min protocol = NT1'
+  fi
+
   local guest=${SMB_GUEST:-n}
   local global_extras share_auth
   if [[ $guest == y ]]; then
@@ -71,6 +85,7 @@ install_smb_share() {
    server string = %h CNC
    security = user
 $global_extras
+$legacy_proto
    load printers = no
    disable spoolss = yes
    printcap name = /dev/null
