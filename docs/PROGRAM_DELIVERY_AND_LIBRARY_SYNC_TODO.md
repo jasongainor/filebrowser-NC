@@ -142,34 +142,91 @@ Name, DHCP/static, IP, mask, gateway, workgroup — all already in
 - **We write into the machine's own storage.** Depends entirely on whether
   this control exposes its User Data over SMB. Do not assume it does.
 
-### The unknown that gates all of it
+### VERIFIED 2026-08-12 — the control is on the network
 
-**We have not verified that the TM-2P itself is on the network.** What is
-confirmed on the shop LAN is the *Waveshare bridge* at `192.168.20.200:4196`
-— that is a serial-to-TCP converter, not the control. The mill having an
-Ethernet port, having the networking option enabled, and having a usable IP
-are three separate facts, none of them checked.
+The TM-2P is at **`192.168.20.248`** (static, set in UniFi), MAC
+`00:1e:bf:01:5a:b3`. This is the *control itself*, not the Waveshare — the
+bridge remains a separate device at `192.168.20.200:4196`.
 
-The README mentions an operator workflow for programs "loaded from SD card /
-Ethernet drop", which hints the control may have a network path already in
-use — but that is a doc claim, not a measurement.
+Confirmed from zinc with the machine powered on:
 
-### Verification steps (needs the machine powered on)
+| Probe | Result |
+|---|---|
+| ICMP | 0% loss, ~0.9 ms, TTL 128 |
+| tcp/23 (telnet) | **open** |
+| tcp/80 (http) | **open** — serves `<TITLE>HAAS Embedded Web/M-Net Server</TITLE>` |
+| tcp/139, tcp/445 (SMB) | **closed** |
+| tcp/21, 22, 443, 502, 4196 | closed |
+| tcp/5051, 5000, 5025, 8080, 8082, 9000, 21328 | closed |
 
-1. At the pendant: Settings 900–907. Is there an IP? Is 901 (DHCP) on? Does
-   the control have the networking option at all, or do those settings not
-   exist on this firmware?
-2. From zinc, with the mill on: `ping <machine-ip>`, then probe 139/445 to
-   see whether it presents SMB.
-3. Check Setting 55 and Setting 14 while standing there — the DNC
-   pre-conditions above.
-4. Record the control generation (Classic vs NGC) and firmware version.
-   Everything above branches on it; a Classic control has no networking and
-   the answer is "serial forever, operator action is mandatory."
+Three conclusions that settle the open questions above:
 
-Only after step 1–4 is it worth designing the drop. Until then this is
-speculation, and the honest status of "auto-send to the machine" is:
-**blocked on a five-minute check at the pendant.**
+1. **This is the Classic Haas Control networking option ("M-Net"), not
+   NGC.** The banner names it outright.
+2. **We cannot write into the machine's storage.** It does not serve SMB —
+   139 and 445 are closed. M-Net makes the control an SMB *client*, so the
+   only workable direction is **zinc exports a share and the Haas mounts
+   it**. The operator then loads programs from the network device at the
+   pendant. That is the network-drop design; "write to its HDD" is off the
+   table.
+3. **There is no Q-code-over-Ethernet path on this control.** Every port
+   associated with Haas MDC-over-network is closed, so the RS-232 bridge
+   stays the only telemetry transport. The single-client constraint that
+   `cnc/link.go` is built around is permanent, not incidental.
+
+Still unverified, all requiring someone at the pendant:
+
+- Settings 900–907 as the control actually has them (we know it is
+  networked; we have not read back its own view of that config).
+- Whether the M-Net settings for a remote share (server name / share path /
+  user / password) exist on this firmware revision and what they are
+  numbered.
+- Setting 55 (Enable DNC from Device) and Setting 14 (handshake) — the DNC
+  pre-conditions.
+
+The embedded web server is worth a closer look on its own merits: it is a
+second, independent read path that does **not** compete for the
+single-client serial bridge. `GET /` returns an IFRAME shell pointing at
+`view.html`; that page did not respond within 10 s on first probe, so what
+it exposes is unknown. If it surfaces offsets or machine state, it is a far
+better source for the periodic refresh below than Q600 macro reads.
+
+---
+
+## C. Nothing ever re-reads the tool table
+
+Confirmed live 2026-08-12: with the machine on and the link healthy
+(`connected: true` on `GET /api/displays/{id}`), the payload still carried
+`last_updated: 2026-06-13T18:18:39Z`. The e-paper correctly showed
+`[connected]` next to two-month-old geometry.
+
+These are two independent facts and it is worth keeping them apart:
+
+- **Connectedness** is live — a Q-code round-trip inside the staleness
+  window (`cnc/link.go`, `Link.Alive`).
+- **The tool table** is a persisted JSON dump on disk, written only when an
+  operator clicks Read Tool Table (`POST /api/cnc/tool-table`). There is no
+  background dumper. Nothing has ever refreshed it on its own.
+
+So a display can be simultaneously connected and completely wrong, with no
+indication of which numbers are live and which are archaeology.
+
+### The fix
+
+1. **Periodic background tool-table dump.** This was unaffordable under the
+   old dial-per-query model — a full table read is a long burst of Q600s
+   against a bridge already at ~75% saturation. With the persistent link
+   owning the socket it is cheap and schedulable. Gate it on the link being
+   alive, skip it entirely while a job is streaming (the socket is busy and
+   the table cannot change mid-program anyway), and make the interval an
+   operator setting alongside `BaselinePollSeconds`.
+2. **Show the dump age wherever the numbers are shown.** The display already
+   renders `updated <date>`; the dashboard and the pre-flight check should
+   refuse to be quietly confident about a dump older than some threshold.
+   Pre-flight in particular compares program T-references against this data
+   — a stale table means a green pre-flight that proves nothing.
+3. Only then is the three-way reconciliation in section A meaningful; it
+   depends on "what the machine reports" being current.
 
 ### Fallback if the control turns out to have no network
 
