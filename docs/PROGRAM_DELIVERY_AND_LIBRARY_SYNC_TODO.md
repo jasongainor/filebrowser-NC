@@ -189,9 +189,25 @@ emit it — **opt-in, defaulting to `n`**, because SMB1 is the protocol family
 EternalBlue targeted and it should not land on every Pi this script
 provisions. Enabling it is a deliberate per-shop decision.
 
+### DONE on zinc 2026-08-12 — SMB1 is live and verified
+
+`SMB_LEGACY=y` applied, `smb.conf` backed up to `smb.conf.pre-nt1`,
+`smbd`/`nmbd` restarted. Verified from zinc by forcing SMB1 with
+`smbclient -m NT1` — which is exactly what the control will negotiate:
+
+- anonymous login successful, `cnc` share visible, workgroup `WORKGROUP`
+- directory listing of the share root returns the real NC files
+- file read succeeded (2,697 B at ~878 KB/s, content verified: `%` / `O01001`)
+
+So the server side is proven end to end before anyone walks to the pendant.
+If Net Share fails from the machine now, the fault is in the control's
+settings or the F1 refresh — not in Samba.
+
+Reverse: `sudo cp -a /etc/samba/smb.conf.pre-nt1 /etc/samba/smb.conf && sudo systemctl restart smbd`
+
 ### Remaining steps
 
-1. Apply `SMB_LEGACY=y` on zinc and restart `smbd`. Reversible; one line.
+1. ~~Apply `SMB_LEGACY=y` on zinc and restart `smbd`.~~ Done, see above.
 2. At the pendant: Settings → I/O → Networking. Set Remote Server to
    `zinc` (or `192.168.20.11`), Remote Share Path to `cnc`, workgroup
    `WORKGROUP`, enable the Net Share tab — **then F1.**
