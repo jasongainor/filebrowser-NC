@@ -228,6 +228,81 @@ indication of which numbers are live and which are archaeology.
 3. Only then is the three-way reconciliation in section A meaningful; it
    depends on "what the machine reports" being current.
 
+---
+
+## D. Presence detection — gate everything on "is the mill actually on?"
+
+Now that the control has its own IP (`192.168.20.248`), there is a cheap
+signal we never had: **ask the machine directly instead of inferring it from
+the bridge.**
+
+This matters because the Waveshare cannot tell us. It answers TCP on
+`:4196` whether or not the mill behind it is powered — which is precisely
+why `cnc/link.go` has to treat a silent controller as non-fatal. The bridge
+being reachable says nothing about the machine.
+
+### The mechanism
+
+One **TCP connect to `192.168.20.248:80`**, short timeout, on an interval.
+Nothing more. That is a single SYN against a port we have confirmed open.
+
+Why that and not the alternatives:
+
+- *ICMP ping* would be marginally lighter, but Go needs either raw sockets
+  or unprivileged-ICMP to be enabled, and `filebrowser` runs as `admin`
+  (non-root) on zinc. Not worth the deployment dependency.
+- *Reading the ARP cache* is cheapest of all but unreliable — entries go
+  STALE and linger after the device is gone, so it reports the past.
+- A TCP connect needs no privileges and says something stronger than ICMP:
+  the control's own stack is up and serving.
+
+To be explicit, since it is the obvious worry: this is one connect to one
+known-open port on a slow interval. It is not a scan, and the port sweep in
+this document was a one-time identification step, not a design.
+
+### This is a net *reduction* in traffic
+
+Today, with the mill off, the baseline poller still fires a Q-code at the
+bridge every `BaselinePollSeconds` and eats a full `queryTimeout` (3 s) of
+silence for each one. Gating on presence replaces that with a single SYN per
+interval and **no bridge traffic at all** while the machine is off. Fewer
+packets, and no more three-second stalls in the link's service loop.
+
+### Three states instead of one bool
+
+`connected` currently collapses distinct failures into one flag. With a
+presence check they separate, and each has a different fix:
+
+| Presence (`:80`) | Q-code round-trip | Meaning |
+|---|---|---|
+| down | — | Mill is powered off. Don't touch the bridge. |
+| up | failing | Control is on but not talking: Setting 143 off, serial cable, or bridge fault. |
+| up | ok | Fully connected. |
+
+The middle row is the one we cannot currently distinguish from the top row,
+and it is the one that would have saved the original debugging session.
+
+### The edge is the trigger
+
+**down → up is the sync event.** The machine just came on; that is exactly
+when its tool table is worth re-reading and exactly when the operator is
+about to care. Firing a tool-table dump on that edge gets section C's
+freshness without a polling timer doing speculative work all day:
+
+- on presence edge up → wait for the link to report a live round-trip →
+  dump the tool table once
+- optionally a slow periodic re-dump on top, for tables edited at the
+  pendant mid-shift
+
+Interval and any periodic re-dump cadence are operator settings — pick them
+from real behaviour on the shop floor, not from this document.
+
+### Keep it small
+
+The whole thing is a goroutine holding one bool with a mutex, an interval,
+and a callback on the rising edge. It should not grow into a health
+subsystem. If it needs more than roughly a hundred lines, the design drifted.
+
 ### Fallback if the control turns out to have no network
 
 Not nothing — the operator step can still be shrunk:
