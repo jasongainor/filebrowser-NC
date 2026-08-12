@@ -45,19 +45,20 @@ func buildMachineToolList(registry *cnc.Registry, d *data, machineID string) (*c
 		return nil, http.StatusNotFound, errors.New("machine not found")
 	}
 
-	// Connected = the aggregator is currently in its wake window AND
-	// the streamer's last query didn't error. Without the streamer
-	// check a machine that's been polled recently but is now offline
-	// would falsely report connected=true.
+	// Connected = the controller actually answered recently. The Link
+	// tracks the last successful Q-code round-trip and the always-on
+	// baseline poller keeps that timestamp fresh, so this is true
+	// whenever the machine is genuinely reachable — no operator and no
+	// open dashboard required.
+	//
+	// This used to read ag.IsAwake(), i.e. "has a human touched the
+	// dashboard in the last 5 minutes". Non-interactive consumers could
+	// never see connected=true: the e-paper display polls once every
+	// ~100 minutes and would essentially never land inside a wake
+	// window, so it rendered "[disconnected]" against a running mill.
 	connected := false
-	if ag, _ := registry.Aggregator(m.ID); ag != nil {
-		connected = ag.IsAwake()
-	}
 	if st, _ := registry.Streamer(m.ID); st != nil {
-		status := st.Status()
-		if status.HaasLastError != "" {
-			connected = false
-		}
+		connected = st.Alive()
 	}
 
 	// Latest table — may be nil for a fresh install. ReadJobHistory's

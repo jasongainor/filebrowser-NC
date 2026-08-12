@@ -53,6 +53,19 @@ type Cnc struct {
 	// config. See Display below + the /api/displays/{id} endpoint.
 	Displays []Display `json:"displays,omitempty"`
 
+	// BaselinePollSeconds is the always-on liveness cadence. The
+	// aggregator polls the baseline metric set at this interval even
+	// when no operator is at the dashboard, which is what makes
+	// `connected` meaningful to non-interactive consumers (the e-paper
+	// display polls once every ~100 minutes and would otherwise never
+	// observe a wake window).
+	//
+	// A machine is reported connected while its last successful
+	// round-trip is within 3x this interval. Raise it to be gentler on
+	// the RS-232 link; lower it to detect a dropped controller sooner.
+	// 0 uses cnc.defaultBaselineInterval (15s).
+	BaselinePollSeconds int `json:"baselinePollSeconds,omitempty"`
+
 	// ── Legacy fields (deprecated; migrated into Machines[0]) ──
 	HaasHost  string `json:"haasHost,omitempty"`
 	HaasPort  int    `json:"haasPort,omitempty"`

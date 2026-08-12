@@ -95,6 +95,10 @@ func (r *Registry) Refresh() {
 			continue
 		}
 		st := New(r.settings, m.ID)
+		// Bring the persistent bridge connection up before the pollers
+		// so the first baseline query has a socket to run on. The Link
+		// redials on its own from here — no operator action, ever.
+		st.StartLink(r.bgCtx)
 		ag := NewAggregator(st)
 		ag.Start(r.bgCtx)
 		r.streamers[m.ID] = st
@@ -115,15 +119,16 @@ func (r *Registry) Refresh() {
 		ag.Stop()
 		delete(r.aggregators, id)
 	}
-	for id := range r.streamers {
+	for id, st := range r.streamers {
 		if _, ok := wanted[id]; ok {
 			continue
 		}
-		// Streamer has no Stop on its lifecycle (only on the active
-		// job); deleting the reference releases the GC-eligible
-		// instance. If a job were running on a removed machine, that
-		// goroutine continues until it finishes or hits its own
-		// cancel — same as today's single-machine behavior.
+		// Tear the persistent connection down explicitly — unlike the
+		// old dial-per-query design there is now a goroutine and a live
+		// socket to release, and dropping the reference alone would
+		// leak both. If a job were running on a removed machine, that
+		// goroutine continues until it finishes or hits its own cancel.
+		st.StopLink()
 		delete(r.streamers, id)
 	}
 }
@@ -135,6 +140,11 @@ func (r *Registry) Stop() {
 	defer r.mu.Unlock()
 	for _, ag := range r.aggregators {
 		ag.Stop()
+	}
+	// Pollers first, then the links they were polling over — the other
+	// order would have in-flight queries racing a closing socket.
+	for _, st := range r.streamers {
+		st.StopLink()
 	}
 }
 

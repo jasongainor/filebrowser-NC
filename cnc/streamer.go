@@ -18,7 +18,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -108,18 +107,19 @@ type Streamer struct {
 	subsMu sync.Mutex
 	subs   []*subscriber
 
-	// queryMu serializes all transient Q-code queries against the
-	// Waveshare bridge. The bridge accepts ONE TCP client at a time;
-	// without this, the aggregator's 16 polling goroutines fan out
-	// concurrent dials and responses cross-contaminate. lastQueryAt
-	// gates a min-spacing pause between back-to-back queries so the
-	// RS-232 side has room to drain.
-	queryMu      sync.Mutex
-	lastQueryAt  time.Time
+	// link owns the one TCP connection to this machine's bridge. Every
+	// Q-code round-trip and every streaming job runs on it. Immutable
+	// after New, so no lock needed to read the pointer.
+	//
+	// This replaces the old queryMu / lastQueryAt pair: the Link serves
+	// all traffic from a single goroutine, so spacing and ordering are
+	// local state there instead of contended mutexes here.
+	link *Link
 }
 
-// queryQueueDepth caps in-flight queries against the streaming socket.
-// 4 is plenty — the dashboard polls one Q-code at a time.
+// queryQueueDepth caps in-flight queries waiting on the Link's inbox.
+// 4 is plenty — the dashboard polls one Q-code at a time and the job
+// pump drains one per G-code line.
 const queryQueueDepth = 4
 
 // minQuerySpacing is the floor on time between consecutive Q-code
@@ -141,7 +141,6 @@ type job struct {
 	lineTotal   int
 	cancel      context.CancelFunc
 	done        chan struct{} // closed when the streaming goroutine exits
-	queryCh     chan *queryReq
 	// dprnt is non-nil when DPRNTCapture is enabled on this Machine.
 	// Owned by run(); never touched from another goroutine.
 	dprnt *dprntBuffer
@@ -189,8 +188,30 @@ func New(s settingsReader, machineID string) *Streamer {
 	if m := readMarkerFor(machineID); m != nil {
 		st.pendingRecovery = m
 	}
+	// The Link routes its own diagnostics through the streamer's log
+	// fan-out so bridge connect/disconnect shows up in the same WS feed
+	// and journal lines operators already watch.
+	st.link = NewLink(s, machineID, st.logf)
 	return st
 }
+
+// StartLink brings the persistent bridge connection up. The registry
+// calls this once per machine at boot; the Link then redials on its own
+// forever. Idempotent.
+func (s *Streamer) StartLink(ctx context.Context) { s.link.Start(ctx) }
+
+// StopLink tears the connection down at shutdown.
+func (s *Streamer) StopLink() { s.link.Stop() }
+
+// Link exposes the connection owner for callers that need its health
+// (the tool-list builder derives `connected` from it).
+func (s *Streamer) Link() *Link { return s.link }
+
+// Alive reports whether the controller is actually answering — see
+// Link.Alive. This is the honest replacement for the old
+// Aggregator.IsAwake() check, which only reported whether an operator
+// had recently touched the dashboard.
+func (s *Streamer) Alive() bool { return s.link.Alive() }
 
 // resolveMachine looks up THIS streamer's Machine in settings. Returns
 // the Machine + the resolved port (defaulting if zero) + nil err if
@@ -259,7 +280,6 @@ func (s *Streamer) Start(absPath, displayPath string, method SendMethod) (*Statu
 		lineTotal:   lineTotal,
 		cancel:      cancel,
 		done:        make(chan struct{}),
-		queryCh:     make(chan *queryReq, queryQueueDepth),
 	}
 	if m.DPRNTCapture {
 		j.dprnt = &dprntBuffer{}
@@ -297,7 +317,7 @@ func (s *Streamer) Start(absPath, displayPath string, method SendMethod) (*Statu
 	st := s.Status()
 	s.emit(Event{Type: "status", Status: st})
 	s.logf("info", "start job %s [%s]: %s (%d lines) → %s:%d", j.id, j.method, j.displayPath, j.lineTotal, host, port)
-	go s.run(ctx, j, host, port)
+	go s.run(ctx, j)
 
 	return st, nil
 }
@@ -318,24 +338,28 @@ func (s *Streamer) Stop() bool {
 	return true
 }
 
-// CheckBridge does a TCP dial to the configured host:port. Returns
-// (ok, latencyMs, addr, err). Does NOT send any Q-code — only verifies
-// network reachability of the Waveshare. Caller should skip during
-// streaming to avoid contending with the job's socket.
+// CheckBridge reports whether the persistent link to the Waveshare is
+// currently established. Returns (ok, latencyMs, addr, err).
+//
+// This no longer dials: opening a second TCP client against a bridge
+// that serves exactly one would either fail spuriously or, worse,
+// displace the live connection. The Link already knows the answer, so
+// we read it. latencyMs is 0 because no probe is performed — the real
+// round-trip latency comes from CheckController below, which sends an
+// actual Q104 over the live socket.
 func (s *Streamer) CheckBridge() (bool, float64, string, error) {
-	m, port, err := s.resolveMachine()
-	if err != nil {
+	if _, _, err := s.resolveMachine(); err != nil {
 		return false, 0, "", err
 	}
-	addr := net.JoinHostPort(m.Host, strconv.Itoa(port))
-	t0 := time.Now()
-	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
-	latency := sinceMs(t0)
-	if err != nil {
-		return false, latency, addr, err
+	st := s.link.State()
+	if !st.Up {
+		err := ErrLinkDown
+		if st.LastErr != "" {
+			err = errors.New(st.LastErr)
+		}
+		return false, 0, st.Addr, err
 	}
-	_ = conn.Close()
-	return true, latency, addr, nil
+	return true, 0, st.Addr, nil
 }
 
 // CheckController sends one Q104 (mode) and validates the response
@@ -494,74 +518,26 @@ func (s *Streamer) Detach() bool {
 // streaming worker has the conn locked the queryTimeout (3s default)
 // bounds the read.
 func (s *Streamer) Query(ctx context.Context, qCode int, macroVar *int) (*QueryResult, error) {
-	m, port, err := s.resolveMachine()
-	if err != nil {
+	// Validate configuration up front so an unconfigured machine still
+	// gets ErrConfigMissing rather than a generic link-down error.
+	if _, _, err := s.resolveMachine(); err != nil {
 		return nil, err
 	}
-	host := m.Host
-
-	s.mu.Lock()
-	j := s.job
-	s.mu.Unlock()
-	if j == nil {
-		return s.runTransient(ctx, host, port, qCode, macroVar)
-	}
-
-	req := &queryReq{
-		q:      qCode,
-		macroV: macroVar,
-		ctx:    ctx,
-		respCh: make(chan *QueryResult, 1),
-	}
-	select {
-	case j.queryCh <- req:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-j.done:
-		// Job ended while we were trying to enqueue. Fall back to a
-		// transient query — through runTransient so we still get the
-		// queryMu serialization vs. any other concurrent callers.
-		return s.runTransient(ctx, host, port, qCode, macroVar)
-	}
-
-	select {
-	case res := <-req.respCh:
-		return res, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	// One path for every caller now — idle or streaming. The Link
+	// serialises against the single-client bridge, and during a job its
+	// pump() drains this same inbox between G-code lines.
+	return s.link.Query(ctx, qCode, macroVar)
 }
 
-// runTransient is the gated path for transient (no-job) queries. The
-// bridge serves one TCP client at a time, so we serialize on queryMu
-// and enforce a min-spacing pause so the RS-232 side can drain between
-// round-trips. ctx cancellation aborts the spacing wait but never an
-// in-flight transientQuery (those have their own queryTimeout).
-func (s *Streamer) runTransient(ctx context.Context, host string, port, qCode int, macroVar *int) (*QueryResult, error) {
-	s.queryMu.Lock()
-	defer s.queryMu.Unlock()
-	if !s.lastQueryAt.IsZero() {
-		if wait := minQuerySpacing - time.Since(s.lastQueryAt); wait > 0 {
-			select {
-			case <-time.After(wait):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-	}
-	res := transientQuery(host, port, qCode, macroVar)
-	s.lastQueryAt = time.Now()
-	return res, nil
-}
-
-// run is the worker goroutine. Owns the TCP socket for the duration of
-// the job and clears s.job on exit so subsequent Starts succeed.
+// run is the worker goroutine. It no longer dials — the Link owns the
+// socket — but it still owns the job's bookkeeping: the recovery
+// marker, job history, attachment reset and status broadcast all hang
+// off its deferred teardown. Clears s.job on exit so subsequent Starts
+// succeed.
 //
-// Each iteration: optionally service one Q-code query (so /api/cnc/qcode
-// stays responsive during a stream), then write the next line. Per-line
-// write keeps cancel + line counters honest; flow control (XON/XOFF) is
-// the next iteration if testing on the real Haas needs it.
-func (s *Streamer) run(ctx context.Context, j *job, host string, port int) {
+// The line-writing itself lives in streamFile, which the Link invokes
+// with the live connection.
+func (s *Streamer) run(ctx context.Context, j *job) {
 	defer close(j.done)
 	// Note: tried auto-attaching to the just-sent file on clean EOF
 	// (PR #101) so the dashboard could keep following through the
@@ -606,21 +582,32 @@ func (s *Streamer) run(ctx context.Context, j *job, host string, port int) {
 		s.emit(Event{Type: "status", Status: s.Status()})
 	}()
 
-	// net.JoinHostPort handles bracketing IPv6 addresses; "%s:%d" doesn't.
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	s.logf("info", "dialing bridge %s…", addr)
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		s.recordError(fmt.Errorf("dial %s: %w", addr, err))
-		return
+	// The socket comes from the Link, which already holds the one
+	// connection this bridge permits. RunJob blocks until body returns;
+	// ErrLinkDown here means the bridge was unreachable at send time,
+	// which is a hard stop — we must never half-send a program.
+	err := s.link.RunJob(ctx, func(conn net.Conn, br *bufio.Reader, pump func()) error {
+		return s.streamFile(ctx, j, conn, br, pump)
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.recordError(err)
 	}
-	defer conn.Close()
-	s.logf("info", "bridge connected, opening %s", j.displayPath)
+}
+
+// streamFile writes the job's G-code to the live bridge socket, one
+// line at a time, interleaving Q-code service and DPRNT scavenging.
+//
+// Runs inside the Link's serve loop, so it owns conn and br exclusively
+// for its duration. Returning a non-nil error tells the Link the socket
+// is suspect and it should redial; returning nil keeps the connection
+// for the next consumer. A cancelled context (operator hit Stop) is a
+// clean exit, not a socket fault — the connection stays up.
+func (s *Streamer) streamFile(ctx context.Context, j *job, conn net.Conn, br *bufio.Reader, pump func()) error {
+	s.logf("info", "streaming %s over established bridge link", j.displayPath)
 
 	f, err := os.Open(j.absPath)
 	if err != nil {
-		s.recordError(fmt.Errorf("open %s: %w", j.absPath, err))
-		return
+		return fmt.Errorf("open %s: %w", j.absPath, err)
 	}
 	defer f.Close()
 
@@ -631,26 +618,26 @@ func (s *Streamer) run(ctx context.Context, j *job, host string, port int) {
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			return
+			// Operator stopped the job. Clean exit — keep the link.
+			return nil
 		default:
 		}
 
 		// Drain at most one pending Q-code query before the next line
 		// so the stream still makes forward progress under heavy
-		// polling. queryQueueDepth bounds the worst case.
-		select {
-		case req := <-j.queryCh:
-			s.serviceQuery(conn, req)
-		default:
-		}
+		// polling. The Link's inbox depth bounds the worst case.
+		pump()
 
 		// DPRNT scavenger — opt-in per Machine.DPRNTCapture. A 3ms
 		// non-blocking read between writes is enough to grab the
 		// human-paced output of a DPRNT[…] macro line without
-		// stealing bytes from a subsequent query exchange.
+		// stealing bytes from a subsequent query exchange. Reads go
+		// through br so buffered bytes can't be stranded behind the
+		// Link's reader.
 		if j.dprnt != nil {
 			_, _ = j.dprnt.scavengeOnce(
 				conn,
+				br,
 				s.dprntSink(j),
 				func(level, msg string) { s.logf(level, "%s", msg) },
 			)
@@ -658,8 +645,7 @@ func (s *Streamer) run(ctx context.Context, j *job, host string, port int) {
 
 		line := strings.TrimRight(scanner.Text(), "\r\n")
 		if _, err := conn.Write([]byte(line + "\r\n")); err != nil {
-			s.recordError(fmt.Errorf("write line %d: %w", j.lineCurrent.Load()+1, err))
-			return
+			return fmt.Errorf("write line %d: %w", j.lineCurrent.Load()+1, err)
 		}
 		n := j.lineCurrent.Add(1)
 		s.emit(Event{Type: "line", N: n, Text: line})
@@ -673,66 +659,26 @@ func (s *Streamer) run(ctx context.Context, j *job, host string, port int) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		s.recordError(fmt.Errorf("read source: %w", err))
-	} else {
-		s.logf("info", "stream complete: %d lines sent", j.lineCurrent.Load())
+		return fmt.Errorf("read source: %w", err)
 	}
+	s.logf("info", "stream complete: %d lines sent", j.lineCurrent.Load())
 
 	// Final DPRNT drain — programs that emit DPRNT[…] near M30 would
-	// otherwise lose the last line because run() returns immediately
+	// otherwise lose the last line because the loop exits immediately
 	// after EOF. Best-effort; no retry on partial frames.
 	if j.dprnt != nil {
 		_, _ = j.dprnt.scavengeOnce(
 			conn,
+			br,
 			s.dprntSink(j),
 			func(level, msg string) { s.logf(level, "%s", msg) },
 		)
 	}
 
-	// Drain any queries enqueued during the final line so callers don't
-	// hang waiting for a response.
-	for {
-		select {
-		case req := <-j.queryCh:
-			s.serviceQuery(conn, req)
-		default:
-			return
-		}
-	}
-}
-
-// serviceQuery executes one Q-code request on the streaming socket and
-// fulfils its response channel. Errors are returned via QueryResult.OK
-// = false rather than thrown — the streaming run loop must keep going.
-func (s *Streamer) serviceQuery(conn net.Conn, req *queryReq) {
-	if err := req.ctx.Err(); err != nil {
-		req.respCh <- &QueryResult{Q: req.q, Var: req.macroV, Error: err.Error()}
-		return
-	}
-	t0 := time.Now()
-	raw, err := exchangeOnConn(conn, req.q, req.macroV)
-	res := &QueryResult{
-		Q:          req.q,
-		Var:        req.macroV,
-		DurationMs: sinceMs(t0),
-	}
-	if err != nil {
-		res.Error = err.Error()
-		req.respCh <- res
-		return
-	}
-	res.Raw = raw
-	v := stripEchoAndFraming(raw)
-	if err := validateResponseShape(req.q, req.macroV, v); err != nil {
-		// Keep Raw, drop Value/Parsed — see same pattern in qcode.go.
-		res.Error = err.Error()
-		req.respCh <- res
-		return
-	}
-	res.Value = v
-	res.Parsed = parseValue(v, req.q, req.macroV)
-	res.OK = true
-	req.respCh <- res
+	// Drain queries enqueued during the final line so callers don't hang
+	// waiting for a response before the Link resumes normal service.
+	pump()
+	return nil
 }
 
 func (s *Streamer) recordError(err error) {

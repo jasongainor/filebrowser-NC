@@ -32,6 +32,12 @@ type Metric struct {
 	LastError  string        `json:"last_error,omitempty"`
 	OK         bool          `json:"ok"`
 	Stale      bool          `json:"stale"`
+
+	// lastAttempt is when we last dispatched a query for this metric,
+	// successful or not. Distinct from LastUpdate (last SUCCESS) because
+	// the baseline rate limiter must throttle attempts even while the
+	// controller is silent. Unexported: internal scheduling, not wire state.
+	lastAttempt time.Time
 }
 
 // metricSpec describes the things we poll. Mirrors haas-dashboard's
@@ -43,41 +49,57 @@ type metricSpec struct {
 	QCode    int
 	MacroVar *int
 	Interval time.Duration
+
+	// Baseline marks a metric that keeps polling at the slower
+	// BaselinePollSeconds cadence even when no operator is at the
+	// dashboard. Keep this set TINY — it is the always-on load on a
+	// single-client RS-232 bridge. Its real job is to keep the Link's
+	// lastGood timestamp fresh so `connected` means something to
+	// non-interactive consumers like the e-paper display.
+	Baseline bool
 }
 
 func ptr[T any](v T) *T { return &v }
 
 var defaultMetricSpecs = []metricSpec{
-	{"mode", "Mode", 104, nil, 3 * time.Second},
-	{"tool", "Current tool", 201, nil, 5 * time.Second},
-	{"last_cycle", "Last cycle time", 303, nil, 10 * time.Second},
-	{"parts", "Parts counter", 402, nil, 3 * time.Second},
-	{"status_combined", "Program / status", 500, nil, 3 * time.Second},
+	// mode (Q104) is the baseline liveness probe: cheapest useful query,
+	// no macro variable, and its success is what keeps the Link's
+	// lastGood — and therefore `connected` — honest around the clock.
+	{"mode", "Mode", 104, nil, 3 * time.Second, true},
+	{"tool", "Current tool", 201, nil, 5 * time.Second, false},
+	{"last_cycle", "Last cycle time", 303, nil, 10 * time.Second, false},
+	{"parts", "Parts counter", 402, nil, 3 * time.Second, false},
+	{"status_combined", "Program / status", 500, nil, 3 * time.Second, false},
 	// #3030 is the read-only "block number being executed" Haas macro on
 	// most Next Gen + classic firmware. Populated when running a program
 	// (any source — MEM, DNC, SD card, ethernet drop), 0 / unset while
 	// idle. Used by the dashboard to follow along on attached files
 	// where there's no Streamer.line_current. Falls back to a position-
 	// to-line heuristic on the frontend when this stays 0.
-	{"current_block", "Current N-block", 600, ptr(3030), 1500 * time.Millisecond},
-	{"spindle_actual", "Spindle RPM (actual)", 600, ptr(3027), 3 * time.Second},
-	{"spindle_cmd", "Spindle RPM (commanded)", 600, ptr(1815), 5 * time.Second},
-	{"pos_x", "Machine X", 600, ptr(5021), 2500 * time.Millisecond},
-	{"pos_y", "Machine Y", 600, ptr(5022), 2500 * time.Millisecond},
-	{"pos_z", "Machine Z", 600, ptr(5023), 2500 * time.Millisecond},
-	{"work_x", "Work X", 600, ptr(5041), 2500 * time.Millisecond},
-	{"work_y", "Work Y", 600, ptr(5042), 2500 * time.Millisecond},
-	{"work_z", "Work Z", 600, ptr(5043), 2500 * time.Millisecond},
-	{"g54_x", "G54 X", 600, ptr(5221), 30 * time.Second},
-	{"g54_y", "G54 Y", 600, ptr(5222), 30 * time.Second},
-	{"g54_z", "G54 Z", 600, ptr(5223), 30 * time.Second},
+	{"current_block", "Current N-block", 600, ptr(3030), 1500 * time.Millisecond, false},
+	{"spindle_actual", "Spindle RPM (actual)", 600, ptr(3027), 3 * time.Second, false},
+	{"spindle_cmd", "Spindle RPM (commanded)", 600, ptr(1815), 5 * time.Second, false},
+	{"pos_x", "Machine X", 600, ptr(5021), 2500 * time.Millisecond, false},
+	{"pos_y", "Machine Y", 600, ptr(5022), 2500 * time.Millisecond, false},
+	{"pos_z", "Machine Z", 600, ptr(5023), 2500 * time.Millisecond, false},
+	{"work_x", "Work X", 600, ptr(5041), 2500 * time.Millisecond, false},
+	{"work_y", "Work Y", 600, ptr(5042), 2500 * time.Millisecond, false},
+	{"work_z", "Work Z", 600, ptr(5043), 2500 * time.Millisecond, false},
+	{"g54_x", "G54 X", 600, ptr(5221), 30 * time.Second, false},
+	{"g54_y", "G54 Y", 600, ptr(5222), 30 * time.Second, false},
+	{"g54_z", "G54 Z", 600, ptr(5223), 30 * time.Second, false},
 }
 
 // defaultWakeWindow is how long an operator-initiated wake keeps the
-// aggregator polling before it falls back to standby. Long enough that
-// a person genuinely working at /machine is never surprised by data
-// going stale; short enough that a forgotten tab doesn't poll the
-// bridge for hours. Each fresh /state, /check, or /start extends it.
+// aggregator on its FULL metric set before falling back to the baseline
+// tier. Long enough that a person genuinely working at /machine is
+// never surprised by data going stale; short enough that a forgotten
+// tab doesn't run the bridge at 75% saturation for hours. Each fresh
+// /state, /check, or /start extends it.
+//
+// Note this window no longer has anything to do with connectivity —
+// the Link stays connected either way, and `connected` comes from
+// Link.Alive(). It governs polling RATE only.
 const defaultWakeWindow = 5 * time.Minute
 
 // Aggregator owns the background pollers and the shared snapshot.
@@ -214,17 +236,29 @@ func (a *Aggregator) pollOnce(ctx context.Context, spec metricSpec) {
 		a.mu.Unlock()
 		return
 	}
-	// Standby unless an operator is actively engaged. /api/cnc/state,
-	// /api/cnc/check, and /api/cnc/start each extend the wake window
-	// (5 min). Outside that window, no polling — the bridge gets a rest.
+	// Rate tier. The wake window is now a RATE policy, not a connection
+	// policy — the Link stays connected regardless. Two tiers:
+	//
+	//   engaged  (operator at the dashboard, wake window live) — every
+	//            metric at its own Interval, as before.
+	//   baseline (nobody watching) — only Baseline metrics, throttled to
+	//            BaselinePollSeconds. This is what keeps `connected`
+	//            truthful for the e-paper display, which polls once
+	//            every ~100 minutes and would never coincide with a
+	//            5-minute operator wake window.
 	//
 	// IMPORTANT: this skip ONLY governs metric polling. Active streams
 	// are unaffected — the IsRunning() check above already returned, so
-	// we never reach this branch during a job. Streamer.run() owns its
-	// own context that's tied to the JOB, not to this wake window.
+	// we never reach this branch during a job.
 	if !a.IsAwake() {
-		return
+		if !spec.Baseline {
+			return
+		}
+		if a.throttledBaseline(spec) {
+			return
+		}
 	}
+	a.markAttempt(spec)
 
 	queryCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
@@ -265,6 +299,29 @@ func (a *Aggregator) pollOnce(ctx context.Context, spec metricSpec) {
 	if changed {
 		a.streamer.emit(Event{Type: "metric", Metric: &snap})
 	}
+}
+
+// throttledBaseline reports whether this baseline metric has already
+// been attempted within the baseline interval, so standby polling holds
+// its slow cadence instead of the metric's engaged Interval.
+func (a *Aggregator) throttledBaseline(spec metricSpec) bool {
+	// Resolve outside the lock — it reads settings.
+	window := a.streamer.Link().baselineInterval()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	m := a.metrics[spec.Key]
+	if m == nil || m.lastAttempt.IsZero() {
+		return false
+	}
+	return time.Since(m.lastAttempt) < window
+}
+
+func (a *Aggregator) markAttempt(spec metricSpec) {
+	a.mu.Lock()
+	if m := a.metrics[spec.Key]; m != nil {
+		m.lastAttempt = time.Now()
+	}
+	a.mu.Unlock()
 }
 
 // Snapshot returns a deep-enough copy of the current metric map for a

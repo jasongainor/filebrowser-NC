@@ -17,7 +17,6 @@ package cnc
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +37,17 @@ const (
 	// the small handful of Haas controls that emit data without a closing ETB.
 	idleAfterData = 1 * time.Second
 )
+
+// errNoResponse means the socket was fine but the controller said
+// nothing within queryTimeout — typically the mill is powered off (the
+// Waveshare stays up and keeps answering TCP), or Setting 143 is off.
+//
+// The Link treats this as NON-fatal to the connection. Dropping and
+// redialling on every silent query would put us back in a reconnect
+// storm all night, every night, which is the churn this design exists
+// to eliminate. Genuine socket faults (write errors, EOF) still force a
+// redial.
+var errNoResponse = errors.New("no response")
 
 // QueryResult mirrors the dashboard's contract so /api/cnc/qcode is a
 // drop-in replacement for haas-dashboard's POST /api/query.
@@ -66,48 +76,25 @@ func payloadFor(qCode int, macroVar *int) []byte {
 	return []byte(b.String())
 }
 
-// transientQuery opens a one-shot TCP connection, sends the query,
-// reads the response, closes. Used when no streaming job holds the
-// socket. Mirrors HaasBridge._round_trip in haas_bridge.py.
-func transientQuery(host string, port, qCode int, macroVar *int) *QueryResult {
-	t0 := time.Now()
-	res := &QueryResult{Q: qCode, Var: macroVar}
-
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	conn, err := net.DialTimeout("tcp", addr, queryTimeout)
-	if err != nil {
-		res.Error = fmt.Sprintf("dial %s: %v", addr, err)
-		res.DurationMs = sinceMs(t0)
-		return res
-	}
-	defer conn.Close()
-
-	raw, err := exchangeOnConn(conn, qCode, macroVar)
-	res.DurationMs = sinceMs(t0)
-	if err != nil {
-		res.Error = err.Error()
-		return res
-	}
-	res.Raw = raw
-	v := stripEchoAndFraming(raw)
-	if err := validateResponseShape(qCode, macroVar, v); err != nil {
-		// Keep Raw for postmortems but DON'T expose Value/Parsed —
-		// rawValue() in the UI would otherwise render a contaminated
-		// frame as if it were truth.
-		res.Error = err.Error()
-		return res
-	}
-	res.Value = v
-	res.Parsed = parseValue(v, qCode, macroVar)
-	res.OK = true
-	return res
+// exchangeOnConn writes one query and reads one framed response on an
+// already-open connection, using a reader private to this call.
+//
+// Only safe when the connection is about to be closed: any bytes the
+// reader buffers past the current frame are discarded with it. On a
+// long-lived connection use exchangeOnReader and hand it the reader
+// that owns the socket for its whole lifetime.
+func exchangeOnConn(conn net.Conn, qCode int, macroVar *int) (string, error) {
+	return exchangeOnReader(conn, bufio.NewReader(conn), qCode, macroVar)
 }
 
-// exchangeOnConn writes one query and reads one framed response on an
-// already-open connection. The streaming loop calls this between line
-// writes so /api/cnc/qcode keeps working during a job (the Waveshare
-// only accepts one client at a time, so we share the streaming socket).
-func exchangeOnConn(conn net.Conn, qCode int, macroVar *int) (string, error) {
+// exchangeOnReader writes one query and reads one framed response,
+// reading through the caller-supplied buffered reader. br MUST be the
+// only reader on conn — see cnc/link.go, where a single reader is
+// created per connection and reused for the socket's lifetime so no
+// buffered bytes are ever stranded between exchanges.
+//
+// conn is used for deadline control only; all reads go through br.
+func exchangeOnReader(conn net.Conn, br *bufio.Reader, qCode int, macroVar *int) (string, error) {
 	deadline := time.Now().Add(queryTimeout)
 	if err := conn.SetDeadline(deadline); err != nil {
 		return "", err
@@ -120,54 +107,52 @@ func exchangeOnConn(conn net.Conn, qCode int, macroVar *int) (string, error) {
 		return "", fmt.Errorf("write: %w", err)
 	}
 
-	br := bufio.NewReader(conn)
+	// Read byte-at-a-time, stopping ON the ETB that closes our frame.
+	//
+	// This must not over-read. Pulling 512-byte chunks would routinely
+	// swallow the START of the next response — on a throwaway socket
+	// that was harmless (the connection died next), but this reader
+	// outlives the exchange, so anything consumed past the frame is
+	// data the NEXT query needed. Stopping exactly at ETB leaves the
+	// remainder in br for whoever reads next. Bytes are cheap here:
+	// br is buffered, so this is a memory copy, not a syscall per byte.
 	var buf bytes.Buffer
-	chunk := make([]byte, 512)
 	for {
-		// Once we've already buffered something, shorten the per-read
-		// deadline so an ETB-less control doesn't keep us blocked all
-		// the way to queryTimeout.
-		if buf.Len() > 0 {
+		// Shorten the deadline only when we're actually about to block
+		// on the socket (nothing left buffered) and already hold data —
+		// covers controls that emit a payload with no closing ETB
+		// without paying a setsockopt per byte.
+		if buf.Len() > 0 && br.Buffered() == 0 {
 			next := time.Now().Add(idleAfterData)
 			if next.Before(deadline) {
 				_ = conn.SetReadDeadline(next)
 			}
 		}
-		n, err := br.Read(chunk)
-		if n > 0 {
-			buf.Write(chunk[:n])
-			if bytes.IndexByte(buf.Bytes(), etbByte) >= 0 {
+		c, err := br.ReadByte()
+		if err == nil {
+			buf.WriteByte(c)
+			if c == etbByte {
 				return buf.String(), nil
 			}
+			continue
 		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				if buf.Len() > 0 {
-					return buf.String(), nil
-				}
-				return "", fmt.Errorf("read: %w", err)
+		if errors.Is(err, io.EOF) {
+			if buf.Len() > 0 {
+				return buf.String(), nil
 			}
-			// Timeout? If we have buffered bytes treat it as idle-done,
-			// otherwise propagate.
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
-				if buf.Len() > 0 {
-					return buf.String(), nil
-				}
-				return "", fmt.Errorf("no response within %s", queryTimeout)
-			}
-			return "", err
+			return "", fmt.Errorf("read: %w", err)
 		}
+		// Timeout? If we have buffered bytes treat it as idle-done,
+		// otherwise propagate.
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			if buf.Len() > 0 {
+				return buf.String(), nil
+			}
+			return "", fmt.Errorf("%w within %s", errNoResponse, queryTimeout)
+		}
+		return "", err
 	}
-}
-
-// queryReq is the channel-passed request carried from Streamer.Query
-// into the streaming run loop when a job is active.
-type queryReq struct {
-	q       int
-	macroV  *int
-	ctx     context.Context
-	respCh  chan *QueryResult
 }
 
 // frameRe matches `\x02 … \x17` — the canonical Haas STX-framed payload.
