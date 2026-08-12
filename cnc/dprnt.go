@@ -18,6 +18,7 @@ package cnc
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"time"
@@ -76,7 +77,12 @@ type dprntBuffer struct {
 //
 // Safe to call between line writes inside run(). Sets and clears its
 // own read deadline so the streamer's outer deadline is untouched.
-func (d *dprntBuffer) scavengeOnce(conn net.Conn, emit func(text string), debug func(level, msg string)) (int, error) {
+// conn is used for read-deadline control only; the actual read goes
+// through r, which must be the SAME reader that owns the socket for its
+// lifetime (cnc/link.go creates one bufio.Reader per connection).
+// Reading the raw conn here instead would race that reader and strand
+// whatever it had already buffered.
+func (d *dprntBuffer) scavengeOnce(conn net.Conn, r io.Reader, emit func(text string), debug func(level, msg string)) (int, error) {
 	prev := time.Now().Add(dprntScavengeDeadline)
 	if err := conn.SetReadDeadline(prev); err != nil {
 		return 0, err
@@ -84,7 +90,7 @@ func (d *dprntBuffer) scavengeOnce(conn net.Conn, emit func(text string), debug 
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
 	tmp := make([]byte, 1024)
-	n, err := conn.Read(tmp)
+	n, err := r.Read(tmp)
 	if n > 0 {
 		d.buf.Write(tmp[:n])
 		d.drain(emit, debug)
