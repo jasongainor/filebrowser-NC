@@ -205,6 +205,70 @@ settings or the F1 refresh — not in Samba.
 
 Reverse: `sudo cp -a /etc/samba/smb.conf.pre-nt1 /etc/samba/smb.conf && sudo systemctl restart smbd`
 
+### IN PROGRESS — the control connects, then stops before negotiate
+
+Pendant settings as configured 2026-08-12 (Settings → I/O → Networking):
+
+| # | Setting | Value |
+|---|---|---|
+| 900 | CNC Network Name | `HAASMachine` |
+| 901 | Obtain Address Automatically | ON |
+| 905 | DNS Server | `192.168.20.1` |
+| 906 | Domain / Workgroup Name | `WORKGROUP` |
+| 907 | Remote Server Name | `zinc` |
+| 908 | Remote Share Path | `cnc` |
+| 909 | User Name | `guest` |
+| 910 | Password | (cleared) |
+| 911 | Access to CNC Share | FULL |
+| 915 | Net Share Tab Enabled | needs confirming — see below |
+
+**Where it gets to.** With `log level = 3` on Samba, a connection from the
+control at 15:51:32 logged:
+
+```
+netbios connect: name1=ZINC  0x20  name2=_CERDR831AAD3C 0x0
+netbios connect: local=zinc remote=_cerdr831aad3c, name type = 0
+```
+
+...and then nothing. So NetBIOS name resolution of `zinc`, the TCP session
+on **port 139**, and Samba's session-request accept all succeed. The control
+never follows with an SMB negotiate.
+
+Note the calling name is `_CERDR831AAD3C`, not the `HAASMachine` configured
+in setting 900. Unexplained; may just be how this firmware builds a calling
+name.
+
+**Two candidate causes**, not yet distinguished:
+
+1. **The control offers a dialect older than NT LM 0.12.** "SMB1" is a
+   family, not a protocol. `server min protocol = NT1` is the *oldest*
+   modern Samba can go — if this control only speaks LANMAN2.1 or Core,
+   Samba has nothing to answer with and there is no Samba-side fix. This
+   would be the bad outcome.
+2. **The session request is only a name probe.** Some clients validate the
+   server name, drop the session, and reconnect properly later — in which
+   case the real attempt hasn't been triggered yet, most likely because tab
+   visibility needs a **power cycle**, not just F1.
+
+**Next step is a packet capture**, which distinguishes them definitively:
+
+```sh
+sudo tcpdump -i eth0 -s 0 -w /tmp/haas.pcap \
+  'host 192.168.20.248 and (port 139 or port 445 or port 137 or port 138)'
+# then trigger from the pendant (F1, or power-cycle), then:
+sudo tcpdump -r /tmp/haas.pcap -nn -A | less
+```
+
+Look for an SMB_COM_NEGOTIATE and the dialect strings it offers. If
+`NT LM 0.12` is in that list, the problem is auth or config. If the newest
+thing offered is `LANMAN2.1` or older, Samba cannot serve this control and
+the fallback is a dedicated SMB1 server (or staying on USB/serial).
+
+Also still unconfirmed: whether **915 Net Share Tab Enabled** is actually
+ON. The `LIST PROGRAM` tab bar shows `MEMORY | USB DEVICE | HARD DRIVE` with
+no Net Share tab, which is either the setting being off or the tab list not
+having refreshed.
+
 ### Remaining steps
 
 1. ~~Apply `SMB_LEGACY=y` on zinc and restart `smbd`.~~ Done, see above.
