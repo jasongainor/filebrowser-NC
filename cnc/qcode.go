@@ -83,6 +83,11 @@ func payloadFor(qCode int, macroVar *int) []byte {
 // reader buffers past the current frame are discarded with it. On a
 // long-lived connection use exchangeOnReader and hand it the reader
 // that owns the socket for its whole lifetime.
+// Kept although nothing calls it today: dprnt.go and link_test.go both cite it
+// by name to explain the persistent-reader hazard, so deleting it would orphan
+// the explanation of why exchangeOnReader exists.
+//
+//nolint:unused // documented counterpart to exchangeOnReader; see the comments above and in dprnt.go
 func exchangeOnConn(conn net.Conn, qCode int, macroVar *int) (string, error) {
 	return exchangeOnReader(conn, bufio.NewReader(conn), qCode, macroVar)
 }

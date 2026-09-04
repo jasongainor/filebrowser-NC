@@ -47,13 +47,13 @@ const (
 	// timeout the pre-Link streaming path used for its job dial.
 	linkDialTimeout = 5 * time.Second
 
-	// linkRetryMin / linkRetryMax bound the reconnect backoff. The Link
+	// linkRetryFloor / linkRetryCeiling bound the reconnect backoff. The Link
 	// redials forever — a bridge that is unplugged at lunch must come
 	// back on its own without an operator poking anything. Jittered so a
 	// multi-machine shop doesn't resynchronise its retries after a
 	// switch reboot.
-	linkRetryMin = 1 * time.Second
-	linkRetryMax = 30 * time.Second
+	linkRetryFloor = 1 * time.Second
+	linkRetryCeiling = 30 * time.Second
 
 	// defaultBaselineInterval is the fallback cadence for the always-on
 	// liveness poll when settings.Cnc.BaselinePollSeconds is unset. One
@@ -268,7 +268,7 @@ func (l *Link) RunJob(ctx context.Context, body func(conn net.Conn, br *bufio.Re
 // draining the inboxes with fast failures so callers never hang.
 func (l *Link) supervise(ctx context.Context) {
 	defer l.wg.Done()
-	backoff := linkRetryMin
+	backoff := linkRetryFloor
 
 	for {
 		if ctx.Err() != nil {
@@ -298,7 +298,7 @@ func (l *Link) supervise(ctx context.Context) {
 
 		l.markUp(addr)
 		l.logf("info", "bridge link established: %s", addr)
-		backoff = linkRetryMin
+		backoff = linkRetryFloor
 
 		serveErr := l.serve(ctx, conn)
 		_ = conn.Close()
@@ -542,11 +542,11 @@ func (l *Link) setJobActive(v bool) {
 	l.mu.Unlock()
 }
 
-// nextBackoff doubles toward linkRetryMax.
+// nextBackoff doubles toward linkRetryCeiling.
 func nextBackoff(d time.Duration) time.Duration {
 	d *= 2
-	if d > linkRetryMax {
-		return linkRetryMax
+	if d > linkRetryCeiling {
+		return linkRetryCeiling
 	}
 	return d
 }
