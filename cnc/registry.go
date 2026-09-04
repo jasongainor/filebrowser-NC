@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/filebrowser/filebrowser/v2/settings"
 )
@@ -30,6 +31,12 @@ type Registry struct {
 	library     *LibraryStore
 	bgCtx       context.Context
 	bgCancel    context.CancelFunc
+
+	// displayMu guards displayLastSeen. Split out from mu (which
+	// serializes the streamer/aggregator maps) so a firmware poll
+	// recording liveness never contends with machine wiring changes.
+	displayMu       sync.RWMutex
+	displayLastSeen map[string]time.Time
 }
 
 // NewRegistry instantiates Streamer + Aggregator pairs for every
@@ -38,11 +45,12 @@ type Registry struct {
 func NewRegistry(s settingsReader) *Registry {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Registry{
-		settings:    s,
-		streamers:   make(map[string]*Streamer),
-		aggregators: make(map[string]*Aggregator),
-		bgCtx:       ctx,
-		bgCancel:    cancel,
+		settings:        s,
+		streamers:       make(map[string]*Streamer),
+		aggregators:     make(map[string]*Aggregator),
+		displayLastSeen: make(map[string]time.Time),
+		bgCtx:           ctx,
+		bgCancel:        cancel,
 	}
 	// Best-effort queue load. A read-only filesystem or permission
 	// error here doesn't bring the install down — the install just
@@ -377,4 +385,40 @@ func (r *Registry) AnyHasPendingRecovery() bool {
 		}
 	}
 	return false
+}
+
+// TouchDisplay records that the display with the given ID just polled
+// GET /api/displays/{id} successfully. Call this from the firmware
+// endpoint on every accepted poll (after the token check, so an
+// unauthorized attempt doesn't count as "seen").
+//
+// Deliberately in-memory only, not persisted through settings.Save().
+// A Display lives inside the single Settings blob (storm writes the
+// whole document per Save call — see settings/settings.go's Cnc.Displays
+// doc comment), so stamping a DB write on every ~60s poll per device
+// would turn a read-mostly admin config into a write hot path and
+// contend with concurrent settings edits from the admin UI. Liveness
+// doesn't need that durability: mirrors the existing Link.lastGood
+// pattern (cnc/link.go) where `connected` is also process-local — a
+// restart just means "unknown" until the next poll confirms the
+// display is still out there, which is the conservative (never lies)
+// direction to be wrong in.
+func (r *Registry) TouchDisplay(id string) {
+	r.displayMu.Lock()
+	defer r.displayMu.Unlock()
+	if r.displayLastSeen == nil {
+		r.displayLastSeen = make(map[string]time.Time)
+	}
+	r.displayLastSeen[id] = time.Now()
+}
+
+// DisplayLastSeen returns the last time the display with the given ID
+// polled successfully, and whether it has been seen at all since this
+// process started. See TouchDisplay for why this doesn't survive a
+// restart.
+func (r *Registry) DisplayLastSeen(id string) (time.Time, bool) {
+	r.displayMu.RLock()
+	defer r.displayMu.RUnlock()
+	t, ok := r.displayLastSeen[id]
+	return t, ok
 }

@@ -112,7 +112,7 @@ func NewHandler(
 	cncRouter.Handle("/tool-table/edit", monkey(cncToolTableEditHandler(registry), "")).Methods("POST")
 	cncRouter.Handle("/jobs", monkey(cncJobsListHandler(registry), "")).Methods("GET")
 	cncRouter.Handle("/jobs/stats", monkey(cncJobsStatsHandler(registry), "")).Methods("GET")
-	cncRouter.Handle("/displays", monkey(cncDisplaysListHandler(), "")).Methods("GET")
+	cncRouter.Handle("/displays", monkey(cncDisplaysListHandler(registry), "")).Methods("GET")
 	cncRouter.Handle("/displays", monkey(cncDisplaysCreateHandler(), "")).Methods("POST")
 	cncRouter.Handle("/displays/{id}", monkey(cncDisplaysUpdateHandler(), "")).Methods("PUT")
 	cncRouter.Handle("/displays/{id}", monkey(cncDisplaysDeleteHandler(), "")).Methods("DELETE")

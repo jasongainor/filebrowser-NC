@@ -50,6 +50,17 @@
               </span>
             </p>
 
+            <p
+              v-if="d.id"
+              class="display-row__laststatus"
+              :class="{ 'display-row__laststatus--stale': isStale(d) }"
+            >
+              <i class="material-icons display-row__laststatus-icon">{{
+                isStale(d) ? "error_outline" : "check_circle"
+              }}</i>
+              <span>{{ lastSeenLabel(d) }}</span>
+            </p>
+
             <p>
               <label class="small">{{ t("displays.machineLabel") }}</label>
               <select class="input input--block" v-model="d.machineId">
@@ -144,6 +155,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import dayjs from "dayjs";
 import { useLayoutStore } from "@/stores/layout";
 import { cnc as cncApi } from "@/api";
 import type { Display } from "@/api/cnc";
@@ -165,6 +177,37 @@ const defaults = {
   pollPowered: 60,
   pollBattery: 900,
   fieldsCsv: "pocket, tool_number, description, diameter, length, wear",
+};
+
+// A display is flagged stale once its last poll is older than this many
+// multiples of its own effective powered-poll interval. 3x matches the
+// same "still connected" tolerance the machine dashboard uses for a
+// controller's baseline poll (see cnc/state.go's BaselinePollSeconds
+// doc) — enough slack for one or two missed cycles (a brief Wi-Fi
+// drop, a slow tool-list build) without crying wolf, while still
+// catching a display that's gone dark for good.
+const STALE_MULTIPLIER = 3;
+
+// effectivePollSeconds mirrors the backend's Resolved() default so the
+// staleness threshold matches what the firmware is actually doing even
+// when the operator left pollIntervalPoweredS blank.
+const effectivePollSeconds = (d: Row) =>
+  d.pollIntervalPoweredS || defaults.pollPowered;
+
+// isStale is also true when the display has never been seen by this
+// server process (d.lastSeen absent) — a fresh restart shouldn't read
+// as "healthy" just because nothing bad has been observed yet.
+const isStale = (d: Row) => {
+  if (!d.lastSeen) return true;
+  const ageMs = Date.now() - new Date(d.lastSeen).getTime();
+  return ageMs > effectivePollSeconds(d) * 1000 * STALE_MULTIPLIER;
+};
+
+const lastSeenLabel = (d: Row) => {
+  if (!d.lastSeen) return t("displays.neverSeen") as string;
+  return t("displays.lastSeen", {
+    time: dayjs(d.lastSeen).fromNow(),
+  }) as string;
 };
 
 const displays = reactive<Row[]>([]);
@@ -336,6 +379,19 @@ onMounted(refresh);
   display: block;
   color: var(--fg-muted, #888);
   margin-top: 2px;
+}
+.display-row__laststatus {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-muted, #888);
+}
+.display-row__laststatus--stale {
+  color: #c62828;
+}
+.display-row__laststatus-icon {
+  font-size: 15px;
 }
 .display-row__grid {
   display: grid;

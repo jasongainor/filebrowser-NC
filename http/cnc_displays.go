@@ -22,6 +22,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -30,14 +31,29 @@ import (
 	"github.com/filebrowser/filebrowser/v2/users"
 )
 
+// displayListItem is a Display plus the process-local liveness the
+// admin UI needs to render "last seen" / stale. See
+// cnc.Registry.TouchDisplay for why LastSeen isn't part of the
+// persisted settings.Display.
+type displayListItem struct {
+	settings.Display
+	LastSeen *time.Time `json:"lastSeen,omitempty"`
+}
+
 // cncDisplaysListHandler returns the configured displays (admin only).
 // Tokens are passed through verbatim — the admin UI surfaces them so
 // the operator can flash them onto the SD card.
-func cncDisplaysListHandler() handleFunc {
+func cncDisplaysListHandler(registry *cnc.Registry) handleFunc {
 	return withAdmin(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		out := d.settings.Cnc.Displays
-		if out == nil {
-			out = []settings.Display{}
+		disps := d.settings.Cnc.Displays
+		out := make([]displayListItem, 0, len(disps))
+		for _, disp := range disps {
+			item := displayListItem{Display: disp}
+			if seen, ok := registry.DisplayLastSeen(disp.ID); ok {
+				t := seen
+				item.LastSeen = &t
+			}
+			out = append(out, item)
 		}
 		return renderJSON(w, r, map[string]any{"displays": out})
 	})
@@ -156,6 +172,13 @@ func cncDisplayFetchHandler(registry *cnc.Registry) handleFunc {
 				return http.StatusUnauthorized, nil
 			}
 		}
+		// Record the poll now that the display has proven itself (token
+		// checked out, or none was required). In-memory only — see
+		// Registry.TouchDisplay for why this doesn't touch settings.Save().
+		// Recorded even if the tool-list build below fails downstream:
+		// the display reaching this endpoint at all is the liveness
+		// signal, independent of whether we could answer it.
+		registry.TouchDisplay(id)
 		// buildMachineToolList needs a user for FullPath resolution on the
 		// tool-table dump directory. The firmware endpoint isn't wrapped in
 		// withUser (no JWT from the e-paper), so hydrate d.user manually

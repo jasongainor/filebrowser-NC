@@ -105,7 +105,9 @@
     "pollPowered": "Poll powered (s)",
     "pollBattery": "Poll battery (s)",
     "fields": "Library fields (comma-separated)",
-    "fieldsHint": "Known: pocket, tool_number, description, diameter, length, wear. Empty = default order."
+    "fieldsHint": "Known: pocket, tool_number, description, diameter, length, wear. Empty = default order.",
+    "lastSeen": "Last seen {time}",
+    "neverSeen": "Never seen since this server last restarted"
   },
   "jobs": {
     "title": "Job history & utilization",
