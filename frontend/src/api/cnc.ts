@@ -594,6 +594,12 @@ export interface Display {
   units?: string;
   pollIntervalPoweredS?: number;
   pollIntervalBatteryS?: number;
+  // lastSeen is the last time this display successfully polled
+  // GET /api/displays/{id}, as an RFC3339 timestamp. Process-local on
+  // the server (not persisted through settings) — absent means "not
+  // seen since the server last restarted," which the UI should treat
+  // the same as stale/unknown, not as "never configured."
+  lastSeen?: string;
 }
 
 export function listDisplays() {
