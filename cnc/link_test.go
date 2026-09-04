@@ -271,7 +271,7 @@ func TestLink_ReconnectsAfterDrop(t *testing.T) {
 	_ = query(t, l, 104) // may succeed or fail; the drop lands after it
 	b.keepAlive()
 
-	// The supervisor should redial (linkRetryMin is 1s, jittered).
+	// The supervisor should redial (linkRetryFloor is 1s, jittered).
 	waitFor(t, 8*time.Second, "reconnect", func() bool {
 		if !l.State().Up {
 			return false
@@ -326,7 +326,7 @@ func TestLink_RunJobUsesSameConnectionAndPumpsQueries(t *testing.T) {
 		}
 	}()
 
-	err := l.RunJob(context.Background(), func(conn net.Conn, br *bufio.Reader, pump func()) error {
+	err := l.RunJob(context.Background(), func(_ net.Conn, _ *bufio.Reader, pump func()) error {
 		// Give the query time to reach the inbox, then pump until it is
 		// serviced or we give up.
 		deadline := time.Now().Add(3 * time.Second)
