@@ -326,7 +326,7 @@ func TestLink_RunJobUsesSameConnectionAndPumpsQueries(t *testing.T) {
 		}
 	}()
 
-	err := l.RunJob(context.Background(), func(_ net.Conn, _ *bufio.Reader, pump func()) error {
+	err := l.RunJob(context.Background(), func(_ Conn, _ *bufio.Reader, pump func(), _ flowContext) error {
 		// Give the query time to reach the inbox, then pump until it is
 		// serviced or we give up.
 		deadline := time.Now().Add(3 * time.Second)
@@ -372,7 +372,7 @@ func TestLink_RunJobRefusedWhenDown(t *testing.T) {
 
 	jctx, jcancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer jcancel()
-	err := l.RunJob(jctx, func(net.Conn, *bufio.Reader, func()) error {
+	err := l.RunJob(jctx, func(Conn, *bufio.Reader, func(), flowContext) error {
 		t.Error("job body must not run against a dead link")
 		return nil
 	})
@@ -409,7 +409,7 @@ func TestExchangeOnReader_PreservesBufferedBytesAcrossExchanges(t *testing.T) {
 
 	br := bufio.NewReader(client)
 
-	raw1, err := exchangeOnReader(client, br, 104, nil)
+	raw1, err := exchangeOnReader(client, br, 104, nil, nil)
 	if err != nil {
 		t.Fatalf("first exchange: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestExchangeOnReader_PreservesBufferedBytesAcrossExchanges(t *testing.T) {
 		t.Fatalf("first value = %q, want MEM", v)
 	}
 
-	raw2, err := exchangeOnReader(client, br, 201, nil)
+	raw2, err := exchangeOnReader(client, br, 201, nil, nil)
 	if err != nil {
 		t.Fatalf("second exchange (buffered frame was dropped): %v", err)
 	}
@@ -444,7 +444,7 @@ func TestLink_RunJobWaitsForBodyAfterCancel(t *testing.T) {
 		cancel()
 	}()
 
-	err := l.RunJob(ctx, func(net.Conn, *bufio.Reader, func()) error {
+	err := l.RunJob(ctx, func(Conn, *bufio.Reader, func(), flowContext) error {
 		<-started
 		// Simulate a body that keeps working briefly after cancellation,
 		// exactly as streamFile does between line boundaries.

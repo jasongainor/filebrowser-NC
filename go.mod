@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/asdine/storm/v3 v3.2.1
 	github.com/asticode/go-astisub v0.40.0
+	github.com/creack/pty v1.1.24
 	github.com/disintegration/imaging v1.6.2
 	github.com/dsoprea/go-exif/v3 v3.0.1
 	github.com/flynn/go-shlex v0.0.0-20150515145356-3f9db97f8568
@@ -25,6 +26,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
 	github.com/tomasen/realip v0.0.0-20180522021738-f0c99a92ddce
+	go.bug.st/serial v1.6.4
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/crypto v0.50.0
 	golang.org/x/image v0.39.0
@@ -43,6 +45,7 @@ require (
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.6 // indirect
+	github.com/creack/goselect v0.1.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
 	github.com/dsoprea/go-logging v0.0.0-20200710184922-b02d349568dd // indirect

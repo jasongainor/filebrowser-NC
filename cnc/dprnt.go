@@ -17,9 +17,9 @@ package cnc
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
-	"net"
 	"strings"
 	"time"
 )
@@ -82,7 +82,15 @@ type dprntBuffer struct {
 // lifetime (cnc/link.go creates one bufio.Reader per connection).
 // Reading the raw conn here instead would race that reader and strand
 // whatever it had already buffered.
-func (d *dprntBuffer) scavengeOnce(conn net.Conn, r io.Reader, emit func(text string), debug func(level, msg string)) (int, error) {
+//
+// gate is non-nil only for a serial connection configured with
+// FlowControl "xonxoff" (cnc/flowcontrol.go). When set, any XON (0x11)
+// / XOFF (0x13) bytes in the read are stripped before they reach the
+// DPRNT buffer — they are flow-control signalling, never program
+// output — and gate's pause state is updated so streamFile's
+// awaitFlowControlResume sees it. TCP callers pass nil and get
+// byte-identical behavior to before this parameter existed.
+func (d *dprntBuffer) scavengeOnce(conn Conn, r io.Reader, emit func(text string), debug func(level, msg string), gate *flowGate) (int, error) {
 	prev := time.Now().Add(dprntScavengeDeadline)
 	if err := conn.SetReadDeadline(prev); err != nil {
 		return 0, err
@@ -92,12 +100,22 @@ func (d *dprntBuffer) scavengeOnce(conn net.Conn, r io.Reader, emit func(text st
 	tmp := make([]byte, 1024)
 	n, err := r.Read(tmp)
 	if n > 0 {
-		d.buf.Write(tmp[:n])
-		d.drain(emit, debug)
+		chunk := tmp[:n]
+		if gate != nil {
+			chunk = gate.filter(chunk)
+		}
+		if len(chunk) > 0 {
+			d.buf.Write(chunk)
+			d.drain(emit, debug)
+		}
 	}
 	// Timeouts on a non-blocking scavenge are expected and not an error.
+	// timeoutErr (cnc/flowcontrol.go) is a structural stand-in for
+	// net.Error so this check covers both the TCP and serial transports
+	// without importing net.
 	if err != nil {
-		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		var te timeoutErr
+		if errors.As(err, &te) && te.Timeout() {
 			return n, nil
 		}
 		return n, err

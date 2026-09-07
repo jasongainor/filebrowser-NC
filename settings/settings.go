@@ -214,6 +214,14 @@ type Machine struct {
 	// Host:Port is the Waveshare RS-232↔TCP bridge.
 	Host string `json:"host"`
 	Port int    `json:"port"`
+	// Serial configures a direct RS-232 connection to the machine — a
+	// Raspberry Pi with a USB→RS-232 adapter owning the Haas' serial
+	// header instead of going through the Waveshare bridge. Empty
+	// Device (the default) means "keep using Host:Port over TCP";
+	// nothing here changes behavior for existing installs. See
+	// docs/SERIAL_TRANSPORT.md and EffectiveSerial for the Haas
+	// Setting → field mapping and defaults.
+	Serial MachineSerial `json:"serial,omitempty"`
 	// ToolSlots is the magazine capacity for tool-table reads. Operators
 	// set this to their machine's actual slot count (e.g. 20 for a
 	// 20-pocket carousel) so reads cover the whole magazine without
@@ -268,6 +276,68 @@ type Machine struct {
 	// all tools" was on but the probe slot wasn't excluded. This list
 	// makes the exclusion visually obvious next to the tool readout.
 	NoProbeSlots []int `json:"noProbeSlots,omitempty"`
+}
+
+// MachineSerial is the direct-serial transport config for one Machine.
+// Device is the only field an operator must set — a Raspberry Pi with a
+// USB→RS-232 adapter typically shows up as /dev/ttyUSB0 or
+// /dev/serial/by-id/…. Every other field has a Haas-sensible zero-value
+// default; see EffectiveSerial.
+type MachineSerial struct {
+	// Device is the tty path on the Pi. Empty means "no direct serial —
+	// use Host:Port over TCP to the Waveshare bridge", which is the
+	// existing behavior for every machine configured before this field
+	// existed.
+	Device string `json:"device,omitempty"`
+	// Baud must match Haas Setting 11 (Baud Rate Selection).
+	Baud int `json:"baud,omitempty"`
+	// DataBits must match Haas Setting 37 (RS-232 Data Bits): 7 or 8.
+	DataBits int `json:"dataBits,omitempty"`
+	// Parity must match Haas Setting 12 (Parity Selection):
+	// "even" | "odd" | "none" | "mark" | "space".
+	Parity string `json:"parity,omitempty"`
+	// StopBits must match Haas Setting 13 (Stop Bits): 1 or 2.
+	StopBits int `json:"stopBits,omitempty"`
+	// FlowControl must match Haas Setting 14 (Synchronization /
+	// Handshake): "xonxoff" | "rtscts" | "none".
+	FlowControl string `json:"flowControl,omitempty"`
+}
+
+// EffectiveSerial returns m.Serial with every zero-valued field resolved
+// to a Haas-sensible default. Deliberately NOT the true Haas factory
+// default (8 data bits / no parity / no handshake) — an unattended DNC
+// drip-feed over serial is worthless without flow control (Setting
+// 14 = XON/XOFF is a hard requirement; see docs/SERIAL_TRANSPORT.md and
+// docs/PROGRAM_DELIVERY_AND_LIBRARY_SYNC_TODO.md section B), and 7
+// data bits / even parity / 1 stop bit (7E1) is the traditional pairing
+// for XON/XOFF DNC on Haas + older Fanuc-style controls. Operators whose
+// Haas is actually left at factory defaults (8N1, no handshake) must set
+// every field explicitly.
+//
+//	Haas Setting                          → field        → default
+//	11  Baud Rate Selection               → Baud         → 9600
+//	37  RS-232 Data Bits                  → DataBits     → 7
+//	12  Parity Selection                  → Parity       → "even"
+//	13  Stop Bits                         → StopBits     → 1
+//	14  Synchronization (Handshake)       → FlowControl  → "xonxoff"
+func (m Machine) EffectiveSerial() MachineSerial {
+	s := m.Serial
+	if s.Baud <= 0 {
+		s.Baud = 9600
+	}
+	if s.DataBits <= 0 {
+		s.DataBits = 7
+	}
+	if strings.TrimSpace(s.Parity) == "" {
+		s.Parity = "even"
+	}
+	if s.StopBits <= 0 {
+		s.StopBits = 1
+	}
+	if strings.TrimSpace(s.FlowControl) == "" {
+		s.FlowControl = "xonxoff"
+	}
+	return s
 }
 
 // IsNoProbeSlot reports whether slot n is in the no-probe list.
