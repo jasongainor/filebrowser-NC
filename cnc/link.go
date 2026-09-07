@@ -1,7 +1,11 @@
 package cnc
 
-// Link owns the single, long-lived TCP connection to one machine's
-// Waveshare RS-232↔TCP bridge.
+// Link owns the single, long-lived connection to one machine — either a
+// TCP session to its Waveshare RS-232↔TCP bridge, or (see
+// cnc/transport.go, cnc/serial_transport.go) a direct serial connection
+// when Machine.Serial.Device is set. Everything below was written for
+// the TCP case and still applies verbatim to serial: "connection" and
+// "socket" mean whichever Conn buildTransport handed back.
 //
 // Why this exists: the bridge serves exactly ONE TCP client at a time,
 // and the RS-232 side behind it has finite bandwidth. The original
@@ -34,8 +38,7 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
-	"net"
-	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,7 +87,7 @@ type linkReq struct {
 // dashboard responsive during a send.
 type jobReq struct {
 	ctx    context.Context
-	body   func(conn net.Conn, br *bufio.Reader, pump func()) error
+	body   func(conn Conn, br *bufio.Reader, pump func(), fc flowContext) error
 	respCh chan error
 }
 
@@ -104,6 +107,19 @@ type Link struct {
 	lastGood  time.Time
 	lastErr   string
 	addr      string
+
+	// flowMode / flowGate describe THIS connection's flow control and
+	// are rebuilt on every successful dial in supervise() — a redial
+	// starts unpaused, matching a freshly opened tty. flowMode is ""
+	// for TCP and for serial configured with FlowControl "none" or
+	// "rtscts" (rtscts is handled by polling CTS directly in
+	// streamFile, not through flowGate). flowGate is non-nil only when
+	// flowMode == "xonxoff". Both are read-only for the duration of one
+	// serve() call, which runs on the same goroutine that set them
+	// (supervise calls serve synchronously) — no mutex needed, same
+	// reasoning as serve()'s local lastQueryAt.
+	flowMode string
+	flowGate *flowGate
 
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -243,7 +259,7 @@ func (l *Link) Query(ctx context.Context, qCode int, macroVar *int) (*QueryResul
 // live connection. Blocks until the body returns. Returns ErrLinkDown
 // if the bridge is not connected — a job must never start against a
 // dead link.
-func (l *Link) RunJob(ctx context.Context, body func(conn net.Conn, br *bufio.Reader, pump func()) error) error {
+func (l *Link) RunJob(ctx context.Context, body func(conn Conn, br *bufio.Reader, pump func(), fc flowContext) error) error {
 	req := &jobReq{ctx: ctx, body: body, respCh: make(chan error, 1)}
 	select {
 	case l.jobCh <- req:
@@ -285,8 +301,7 @@ func (l *Link) supervise(ctx context.Context) {
 			continue
 		}
 
-		addr := net.JoinHostPort(m.Host, strconv.Itoa(port))
-		conn, err := net.DialTimeout("tcp", addr, linkDialTimeout)
+		transport, err := buildTransport(m, port)
 		if err != nil {
 			l.markDown(err)
 			if !l.rejectFor(ctx, backoff) {
@@ -296,7 +311,28 @@ func (l *Link) supervise(ctx context.Context) {
 			continue
 		}
 
+		conn, err := transport.Dial(linkDialTimeout)
+		if err != nil {
+			l.markDown(err)
+			if !l.rejectFor(ctx, backoff) {
+				return
+			}
+			backoff = nextBackoff(backoff)
+			continue
+		}
+
+		addr := transport.Addr()
 		l.markUp(addr)
+		// Rebuilt per connection — see the flowMode/flowGate field
+		// comment. A TCP transport (or serial with FlowControl "none"
+		// / "rtscts") reports "" here, so flowGate stays nil and every
+		// XON/XOFF-aware call site below is a no-op for those.
+		l.flowMode = transport.FlowControl()
+		if l.flowMode == "xonxoff" {
+			l.flowGate = newFlowGate()
+		} else {
+			l.flowGate = nil
+		}
 		l.logf("info", "bridge link established: %s", addr)
 		backoff = linkRetryFloor
 
@@ -327,7 +363,7 @@ func (l *Link) resolveMachine() (settings.Machine, int, error) {
 		return settings.Machine{}, 0, err
 	}
 	m, ok := set.Cnc.MachineByID(l.machineID)
-	if !ok || m.Host == "" {
+	if !ok || (m.Host == "" && strings.TrimSpace(m.Serial.Device) == "") {
 		return settings.Machine{}, 0, ErrConfigMissing
 	}
 	port := m.Port
@@ -340,7 +376,7 @@ func (l *Link) resolveMachine() (settings.Machine, int, error) {
 // serve owns the connection. Single goroutine, so query spacing and the
 // buffered reader need no synchronisation. Returns the error that cost
 // us the connection (nil on context cancellation).
-func (l *Link) serve(ctx context.Context, conn net.Conn) error {
+func (l *Link) serve(ctx context.Context, conn Conn) error {
 	// ONE reader for the connection's lifetime. Allocating a fresh
 	// bufio.Reader per exchange (as the transient path did) discards
 	// whatever it had buffered beyond the current frame — harmless when
@@ -368,7 +404,7 @@ func (l *Link) serve(ctx context.Context, conn net.Conn) error {
 
 		case jr := <-l.jobCh:
 			l.setJobActive(true)
-			err := jr.body(conn, br, pump)
+			err := jr.body(conn, br, pump, flowContext{Mode: l.flowMode, Gate: l.flowGate})
 			l.setJobActive(false)
 			jr.respCh <- err
 			if err != nil {
@@ -386,7 +422,7 @@ func (l *Link) serve(ctx context.Context, conn net.Conn) error {
 // min-spacing floor. Returns a non-nil error only when the failure
 // implicates the connection itself (so the supervisor redials);
 // protocol-level failures come back on the request's response channel.
-func (l *Link) service(conn net.Conn, br *bufio.Reader, req *linkReq, lastQueryAt *time.Time) error {
+func (l *Link) service(conn Conn, br *bufio.Reader, req *linkReq, lastQueryAt *time.Time) error {
 	if err := req.ctx.Err(); err != nil {
 		req.respCh <- &QueryResult{Q: req.q, Var: req.macroV, Error: err.Error()}
 		return nil
@@ -406,7 +442,7 @@ func (l *Link) service(conn net.Conn, br *bufio.Reader, req *linkReq, lastQueryA
 	}
 
 	t0 := time.Now()
-	raw, err := exchangeOnReader(conn, br, req.q, req.macroV)
+	raw, err := exchangeOnReader(conn, br, req.q, req.macroV, l.flowGate)
 	*lastQueryAt = time.Now()
 
 	res := &QueryResult{Q: req.q, Var: req.macroV, DurationMs: sinceMs(t0)}
@@ -455,7 +491,7 @@ func (l *Link) service(conn net.Conn, br *bufio.Reader, req *linkReq, lastQueryA
 //
 // Bounded by a very short deadline: we only want bytes already in
 // flight, not to wait for new ones.
-func (l *Link) drain(conn net.Conn, br *bufio.Reader) {
+func (l *Link) drain(conn Conn, br *bufio.Reader) {
 	_ = conn.SetReadDeadline(time.Now().Add(dprntScavengeDeadline))
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 	discarded := 0

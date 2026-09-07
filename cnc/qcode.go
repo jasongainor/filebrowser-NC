@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -88,8 +87,8 @@ func payloadFor(qCode int, macroVar *int) []byte {
 // the explanation of why exchangeOnReader exists.
 //
 //nolint:unused // documented counterpart to exchangeOnReader; see the comments above and in dprnt.go
-func exchangeOnConn(conn net.Conn, qCode int, macroVar *int) (string, error) {
-	return exchangeOnReader(conn, bufio.NewReader(conn), qCode, macroVar)
+func exchangeOnConn(conn Conn, qCode int, macroVar *int) (string, error) {
+	return exchangeOnReader(conn, bufio.NewReader(conn), qCode, macroVar, nil)
 }
 
 // exchangeOnReader writes one query and reads one framed response,
@@ -99,7 +98,15 @@ func exchangeOnConn(conn net.Conn, qCode int, macroVar *int) (string, error) {
 // buffered bytes are ever stranded between exchanges.
 //
 // conn is used for deadline control only; all reads go through br.
-func exchangeOnReader(conn net.Conn, br *bufio.Reader, qCode int, macroVar *int) (string, error) {
+//
+// gate is non-nil only for a serial connection configured with
+// FlowControl "xonxoff" (see cnc/flowcontrol.go). When set, XON (0x11)
+// / XOFF (0x13) bytes are consumed to update gate's pause state and
+// never appear in the returned frame — a Q-code response must never
+// have a stray control byte land inside its STX…ETB payload. TCP
+// callers pass nil and get byte-identical behavior to before this
+// parameter existed.
+func exchangeOnReader(conn Conn, br *bufio.Reader, qCode int, macroVar *int, gate *flowGate) (string, error) {
 	deadline := time.Now().Add(queryTimeout)
 	if err := conn.SetDeadline(deadline); err != nil {
 		return "", err
@@ -135,6 +142,16 @@ func exchangeOnReader(conn net.Conn, br *bufio.Reader, qCode int, macroVar *int)
 		}
 		c, err := br.ReadByte()
 		if err == nil {
+			if gate != nil {
+				switch c {
+				case xoffByte:
+					gate.setPaused(true)
+					continue
+				case xonByte:
+					gate.setPaused(false)
+					continue
+				}
+			}
 			buf.WriteByte(c)
 			if c == etbByte {
 				return buf.String(), nil
@@ -148,9 +165,11 @@ func exchangeOnReader(conn net.Conn, br *bufio.Reader, qCode int, macroVar *int)
 			return "", fmt.Errorf("read: %w", err)
 		}
 		// Timeout? If we have buffered bytes treat it as idle-done,
-		// otherwise propagate.
-		var ne net.Error
-		if errors.As(err, &ne) && ne.Timeout() {
+		// otherwise propagate. timeoutErr (cnc/flowcontrol.go) is a
+		// structural stand-in for net.Error so this same check covers
+		// both the TCP and serial transports without importing net.
+		var te timeoutErr
+		if errors.As(err, &te) && te.Timeout() {
 			if buf.Len() > 0 {
 				return buf.String(), nil
 			}

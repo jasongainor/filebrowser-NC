@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"strings"
 	"sync"
@@ -227,7 +226,10 @@ func (s *Streamer) resolveMachine() (settings.Machine, int, error) {
 	if !ok {
 		return settings.Machine{}, 0, ErrConfigMissing
 	}
-	if m.Host == "" {
+	// A Machine is configured when it has EITHER a bridge host (TCP) OR
+	// a direct serial device — see settings.MachineSerial. Neither set
+	// means the operator hasn't filled in Settings → Machine at all.
+	if m.Host == "" && strings.TrimSpace(m.Serial.Device) == "" {
 		return settings.Machine{}, 0, ErrConfigMissing
 	}
 	port := m.Port
@@ -247,7 +249,12 @@ func (s *Streamer) Start(absPath, displayPath string, method SendMethod) (*Statu
 	if err != nil {
 		return nil, err
 	}
-	host := m.Host
+	// Human-readable target for the start-of-job log line only — the
+	// Link is what actually resolves TCP-vs-serial (see buildTransport).
+	target := fmt.Sprintf("%s:%d", m.Host, port)
+	if strings.TrimSpace(m.Serial.Device) != "" {
+		target = m.Serial.Device
+	}
 
 	lineTotal, err := countLines(absPath)
 	if err != nil {
@@ -316,7 +323,7 @@ func (s *Streamer) Start(absPath, displayPath string, method SendMethod) (*Statu
 
 	st := s.Status()
 	s.emit(Event{Type: "status", Status: st})
-	s.logf("info", "start job %s [%s]: %s (%d lines) → %s:%d", j.id, j.method, j.displayPath, j.lineTotal, host, port)
+	s.logf("info", "start job %s [%s]: %s (%d lines) → %s", j.id, j.method, j.displayPath, j.lineTotal, target)
 	go s.run(ctx, j)
 
 	return st, nil
@@ -586,8 +593,8 @@ func (s *Streamer) run(ctx context.Context, j *job) {
 	// connection this bridge permits. RunJob blocks until body returns;
 	// ErrLinkDown here means the bridge was unreachable at send time,
 	// which is a hard stop — we must never half-send a program.
-	err := s.link.RunJob(ctx, func(conn net.Conn, br *bufio.Reader, pump func()) error {
-		return s.streamFile(ctx, j, conn, br, pump)
+	err := s.link.RunJob(ctx, func(conn Conn, br *bufio.Reader, pump func(), fc flowContext) error {
+		return s.streamFile(ctx, j, conn, br, pump, fc)
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		s.recordError(err)
@@ -602,7 +609,15 @@ func (s *Streamer) run(ctx context.Context, j *job) {
 // is suspect and it should redial; returning nil keeps the connection
 // for the next consumer. A cancelled context (operator hit Stop) is a
 // clean exit, not a socket fault — the connection stays up.
-func (s *Streamer) streamFile(ctx context.Context, j *job, conn net.Conn, br *bufio.Reader, pump func()) error {
+//
+// fc carries this connection's flow-control mode. For fc.Mode ==
+// "xonxoff" (direct serial, Setting 14 = XON/XOFF), streamFile pauses
+// before writing the next line whenever the controller has asserted
+// XOFF and hasn't yet sent XON — see awaitFlowControlResume in
+// cnc/flowcontrol.go. For "rtscts" it instead polls the CTS
+// modem-status bit via awaitClearToSend. Both are no-ops for TCP
+// (fc.Mode == "").
+func (s *Streamer) streamFile(ctx context.Context, j *job, conn Conn, br *bufio.Reader, pump func(), fc flowContext) error {
 	s.logf("info", "streaming %s over established bridge link", j.displayPath)
 
 	f, err := os.Open(j.absPath)
@@ -633,14 +648,45 @@ func (s *Streamer) streamFile(ctx context.Context, j *job, conn net.Conn, br *bu
 		// human-paced output of a DPRNT[…] macro line without
 		// stealing bytes from a subsequent query exchange. Reads go
 		// through br so buffered bytes can't be stranded behind the
-		// Link's reader.
-		if j.dprnt != nil {
+		// Link's reader. When flow control is active this same read
+		// also strips/tracks XON/XOFF (see fc.Gate); when DPRNT capture
+		// is off but flow control is on, pollFlowControl does the same
+		// job without the DPRNT buffering overhead.
+		switch {
+		case j.dprnt != nil:
 			_, _ = j.dprnt.scavengeOnce(
 				conn,
 				br,
 				s.dprntSink(j),
 				func(level, msg string) { s.logf(level, "%s", msg) },
+				fc.Gate,
 			)
+		case fc.Gate != nil:
+			pollFlowControl(conn, br, fc.Gate)
+		}
+
+		// Flow control gate — block here, not inside the write, so a
+		// paused controller shows up as "waiting" rather than a hung
+		// write with no visibility. See streamFile's doc comment.
+		switch fc.Mode {
+		case "xonxoff":
+			if err := awaitFlowControlResume(ctx, conn, br, fc.Gate, s.logf); err != nil {
+				return fmt.Errorf("line %d: %w", j.lineCurrent.Load()+1, err)
+			}
+		case "rtscts":
+			if err := awaitClearToSend(ctx, conn, s.logf); err != nil {
+				return fmt.Errorf("line %d: %w", j.lineCurrent.Load()+1, err)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			// The flow-control wait above can return early on
+			// cancellation without erroring (an operator Stop wins over
+			// a stall) — re-check here so we still exit cleanly instead
+			// of writing one more line to a connection we were told to
+			// abandon.
+			return nil
+		default:
 		}
 
 		line := strings.TrimRight(scanner.Text(), "\r\n")
@@ -672,6 +718,7 @@ func (s *Streamer) streamFile(ctx context.Context, j *job, conn net.Conn, br *bu
 			br,
 			s.dprntSink(j),
 			func(level, msg string) { s.logf(level, "%s", msg) },
+			fc.Gate,
 		)
 	}
 
