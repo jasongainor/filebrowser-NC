@@ -568,3 +568,36 @@ func TestBuildPreflightWithIdentityHeaderAndSidecar(t *testing.T) {
 		t.Fatalf("expected legacy tool path unaffected, got %+v", pf.Tools)
 	}
 }
+
+func TestParseIdentityShaPendingIsUnstamped(t *testing.T) {
+	nc := []byte("(GMW-ID V1)\n(GMW-JOB J000020 OP10)\n(GMW-SHA PENDING)\nG20 G17\nM30\n")
+	id, ok := ParseIdentity(nc)
+	if !ok {
+		t.Fatal("expected a header")
+	}
+	if id.SHAStatus != SHAUnstamped || id.SHAMatch || id.HeaderSHA256 != "" {
+		t.Fatalf("PENDING must read as unstamped, got status=%q match=%v header=%q", id.SHAStatus, id.SHAMatch, id.HeaderSHA256)
+	}
+	if id.ComputedSHA256 == "" {
+		t.Fatal("computed sha must still be present")
+	}
+}
+
+func TestParseIdentityShaStatusValues(t *testing.T) {
+	body := "G20 G17\nM30\n"
+	stamped := []byte("(GMW-ID V1)\n(GMW-SHA 0000000000000000000000000000000000000000000000000000000000000000)\n" + body)
+	id, _ := ParseIdentity(stamped)
+	if id.SHAStatus != SHAMismatch {
+		t.Fatalf("wrong hash must be mismatch, got %q", id.SHAStatus)
+	}
+	good := []byte("(GMW-ID V1)\n(GMW-SHA " + id.ComputedSHA256 + ")\n" + body)
+	id2, _ := ParseIdentity(good)
+	if id2.SHAStatus != SHAMatchStatus || !id2.SHAMatch {
+		t.Fatalf("matching hash must be match, got %q", id2.SHAStatus)
+	}
+	none := []byte("(GMW-ID V1)\n" + body)
+	id3, _ := ParseIdentity(none)
+	if id3.SHAStatus != SHAUnstamped {
+		t.Fatalf("absent GMW-SHA must be unstamped, got %q", id3.SHAStatus)
+	}
+}
