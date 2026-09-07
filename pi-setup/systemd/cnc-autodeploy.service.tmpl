@@ -12,7 +12,8 @@ User=root
 Environment=REPO_DIR=@@FB_WORKDIR@@
 Environment=RUN_USER=@@FB_USER@@
 Environment=GO_BIN=@@GO_BIN@@
-Environment=SERVICE=filebrowser
+Environment=SERVICE=@@SERVICE@@
+Environment=CNCD_BIN=@@CNCD_BIN@@
 Environment=BRANCH=@@DEPLOY_BRANCH@@
 ExecStart=@@AUTODEPLOY_BIN@@
 
