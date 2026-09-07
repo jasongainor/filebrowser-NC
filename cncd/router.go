@@ -72,6 +72,7 @@ func NewRouter(d Deps) http.Handler {
 	registerCNC(r, d)
 	registerMCP(r, d)
 	registerRunKind(r, d)
+	registerJobs(r, d)
 
 	return r
 }

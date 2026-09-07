@@ -45,9 +45,19 @@ poll interval:
     "smbAddress": "127.0.0.1:445",
     "domain": "",
     "sessionTTLHours": 168
+  },
+  "jobs": {
+    "rootIsJobs": true,
+    "autoBucket": true
   }
 }
 ```
+
+`jobs` is additive and optional, like `auth` — both knobs default to `true`
+even when the key is absent entirely, so an existing install picks up the
+bucketed-root behavior without touching this file. See `docs/JOB_FOLDERS.md`
+for the folder-naming rule, the auto-bucket watcher, and how to turn either
+knob off.
 
 `auth` is additive and optional — an absent or zero-valued `auth` object
 gets cncd's own defaults (`127.0.0.1:445`, empty domain, a one-week session
@@ -189,6 +199,9 @@ signs into cncd's UI.
 | POST | `/api/cnc/settings/token` | admin | mint a new machine token |
 | GET | `/api/cnc/jobs` | open | job history |
 | GET | `/api/cnc/jobs/stats` | open | windowed job aggregates |
+| GET | `/api/jobs` | open | job-folder summary + unfiled root files — see `docs/JOB_FOLDERS.md` (not to be confused with `/api/cnc/jobs` above, which is run *history*, not the folder layout) |
+| POST | `/api/jobs` | modify | create a job folder ahead of time; idempotent |
+| POST | `/api/jobs/file` | modify | file one loose root file into its job folder by hand |
 | GET | `/api/cnc/codes/lookup` | open | Haas alarm/setting/parameter lookup |
 | GET | `/api/cnc/codes/search` | open | free-text code search |
 | GET | `/api/cnc/host-stats` | open | Pi health snapshot |
