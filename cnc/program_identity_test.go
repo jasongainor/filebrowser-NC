@@ -134,6 +134,71 @@ func TestParseIdentityJobWithoutOperation(t *testing.T) {
 	}
 }
 
+// ── GMW-KIND ─────────────────────────────────────────────────────────────
+
+func TestParseIdentityKindAllValues(t *testing.T) {
+	cases := []struct {
+		token string
+		want  string
+	}{
+		{"TRIAL", RunKindTrial},
+		{"PROD", RunKindProduction},
+		{"RND", RunKindRnd},
+		// Case-insensitive, like every other GMW- field.
+		{"trial", RunKindTrial},
+		{"Prod", RunKindProduction},
+	}
+	for _, c := range cases {
+		nc := []byte("(GMW-ID V1)\n(GMW-KIND " + c.token + ")\nN10 G20\n")
+		id, ok := ParseIdentity(nc)
+		if !ok {
+			t.Fatalf("token %q: expected identity found", c.token)
+		}
+		if id.Kind != c.want {
+			t.Errorf("token %q: Kind = %q, want %q", c.token, id.Kind, c.want)
+		}
+	}
+}
+
+func TestParseIdentityKindAbsent(t *testing.T) {
+	nc := []byte("(GMW-ID V1)\n(GMW-JOB J1 OP10)\nN10 G20\n")
+	id, ok := ParseIdentity(nc)
+	if !ok {
+		t.Fatalf("expected identity found")
+	}
+	if id.Kind != "" {
+		t.Errorf("Kind = %q, want empty when GMW-KIND absent", id.Kind)
+	}
+}
+
+func TestParseIdentityKindMalformedDegradesGracefully(t *testing.T) {
+	// An unrecognized token isn't one of TRIAL|PROD|RND, so the whole
+	// line just fails to match gmwKindRe and Kind stays empty — same
+	// "malformed field, not a malformed block" rule as every other
+	// GMW- field.
+	nc := []byte("(GMW-ID V1)\n(GMW-KIND BOGUS)\nN10 G20\n")
+	id, ok := ParseIdentity(nc)
+	if !ok {
+		t.Fatalf("expected identity found despite malformed GMW-KIND")
+	}
+	if id.Kind != "" {
+		t.Errorf("Kind = %q, want empty for an unrecognized token", id.Kind)
+	}
+}
+
+func TestValidRunKind(t *testing.T) {
+	for _, k := range []string{RunKindTrial, RunKindProduction, RunKindRnd} {
+		if !ValidRunKind(k) {
+			t.Errorf("ValidRunKind(%q) = false, want true", k)
+		}
+	}
+	for _, k := range []string{"", "TRIAL", "bogus", "Production"} {
+		if ValidRunKind(k) {
+			t.Errorf("ValidRunKind(%q) = true, want false", k)
+		}
+	}
+}
+
 func TestParseIdentityHeaderMustStartAtLineOne(t *testing.T) {
 	// A GMW-ID line that isn't the very first line doesn't count —
 	// the header block owns line 1 unconditionally.
@@ -175,6 +240,42 @@ func TestLoadSidecarRoundTrip(t *testing.T) {
 	}
 	if len(got.Tools) != 1 || got.Tools[0].TNumber != 5 {
 		t.Errorf("tools = %+v", got.Tools)
+	}
+}
+
+func TestLoadSidecarKindRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prog.nc.gmw.json")
+	sc := Sidecar{SchemaVersion: 1, Job: "J000020", Kind: RunKindTrial, SHA256: "abc123"}
+	buf, err := json.Marshal(&sc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := LoadSidecar(path)
+	if err != nil {
+		t.Fatalf("LoadSidecar: %v", err)
+	}
+	if got.Kind != RunKindTrial {
+		t.Errorf("Kind = %q, want %q", got.Kind, RunKindTrial)
+	}
+}
+
+func TestLoadSidecarKindOmittedWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prog.nc.gmw.json")
+	if err := os.WriteFile(path, []byte(`{"schema_version":1,"job":"J1","sha256":"abc"}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := LoadSidecar(path)
+	if err != nil {
+		t.Fatalf("LoadSidecar: %v", err)
+	}
+	if got.Kind != "" {
+		t.Errorf("Kind = %q, want empty when absent from JSON", got.Kind)
 	}
 }
 
@@ -434,7 +535,7 @@ func TestBuildIdentityReportNoHeader(t *testing.T) {
 func TestBuildIdentityReportSidecarMissing(t *testing.T) {
 	dir := t.TempDir()
 	ncPath := filepath.Join(dir, "prog.nc")
-	nc := []byte("(GMW-ID V1)\n(GMW-JOB J1 OP10)\nN10 G20\n")
+	nc := []byte("(GMW-ID V1)\n(GMW-JOB J1 OP10)\n(GMW-KIND PROD)\nN10 G20\n")
 
 	rep := BuildIdentityReport(ncPath, nc, nil)
 	if rep == nil {
@@ -451,6 +552,23 @@ func TestBuildIdentityReportSidecarMissing(t *testing.T) {
 	}
 	if rep.Job != "J1" {
 		t.Errorf("job = %q", rep.Job)
+	}
+	if rep.Kind != RunKindProduction {
+		t.Errorf("kind = %q, want %q", rep.Kind, RunKindProduction)
+	}
+}
+
+func TestBuildIdentityReportKindEmptyWhenHeaderOmitsIt(t *testing.T) {
+	dir := t.TempDir()
+	ncPath := filepath.Join(dir, "prog.nc")
+	nc := []byte("(GMW-ID V1)\n(GMW-JOB J1 OP10)\nN10 G20\n")
+
+	rep := BuildIdentityReport(ncPath, nc, nil)
+	if rep == nil {
+		t.Fatalf("expected a report when header is present")
+	}
+	if rep.Kind != "" {
+		t.Errorf("kind = %q, want empty", rep.Kind)
 	}
 }
 

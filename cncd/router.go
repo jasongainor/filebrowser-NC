@@ -71,6 +71,7 @@ func NewRouter(d Deps) http.Handler {
 
 	registerCNC(r, d)
 	registerMCP(r, d)
+	registerRunKind(r, d)
 	registerJobs(r, d)
 
 	return r
@@ -114,17 +115,34 @@ func resolveAggregator(registry *cnc.Registry, r *http.Request) (*cnc.Aggregator
 // stateHandler serves GET /api/cnc/state — the baseline-metric
 // snapshot external tools (Home Assistant, monitoring dashboards)
 // poll. Bearer-only: see the "no session fallback" note on NewRouter.
+//
+// run_kind/run_id are added alongside the metric keys (never
+// replacing or renaming any of them) whenever cnc.Reporter has a run
+// open for the resolved machine, so /machine's UI can render the
+// current run's classification without a second request — see
+// cncd/router_runkind.go for the route that lets an operator change
+// it. Cheap: Reporter.OpenRunInfo is just an in-memory map lookup, no
+// gmw-mes round trip.
 func (d Deps) stateHandler(w http.ResponseWriter, r *http.Request) {
 	if !d.bearerOrUnauthorized(w, r) {
 		return
 	}
-	ag, _, err := resolveAggregator(d.Registry, r)
+	ag, resolvedID, err := resolveAggregator(d.Registry, r)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
 	ag.Wake(0)
-	_ = renderJSON(w, ag.Snapshot())
+	snapshot := ag.Snapshot()
+	body := make(map[string]any, len(snapshot)+2)
+	for k, v := range snapshot {
+		body[k] = v
+	}
+	if kind, runID, open := d.Registry.Reporter().OpenRunInfo(resolvedID); open {
+		body["run_kind"] = kind
+		body["run_id"] = runID
+	}
+	_ = renderJSON(w, body)
 }
 
 type qcodeBody struct {
