@@ -66,10 +66,36 @@ type Cnc struct {
 	// 0 uses cnc.defaultBaselineInterval (15s).
 	BaselinePollSeconds int `json:"baselinePollSeconds,omitempty"`
 
+	// Auth configures cncd's web sign-in, which validates against the
+	// local Samba server instead of a second user store — see
+	// docs/CNCD.md, "Sign-in". Additive: zero-valued is a legal config
+	// (cncd fills in its own defaults for an unset SMBAddress/TTL).
+	Auth AuthConfig `json:"auth,omitempty"`
+
 	// ── Legacy fields (deprecated; migrated into Machines[0]) ──
 	HaasHost  string `json:"haasHost,omitempty"`
 	HaasPort  int    `json:"haasPort,omitempty"`
 	CameraURL string `json:"cameraUrl,omitempty"`
+}
+
+// AuthConfig configures how cncd's web UI validates a sign-in. There
+// is no second user store: the password that authenticates against
+// the Samba share is the password for the UI, checked with an SMB2
+// session setup against the local Samba server. See docs/CNCD.md.
+type AuthConfig struct {
+	// SMBAddress is the host:port of the Samba server sign-in
+	// validates against. Empty defaults to "127.0.0.1:445" — the
+	// Pi's own smbd, which is the only configuration cncd targets.
+	SMBAddress string `json:"smbAddress,omitempty"`
+	// Domain is the NTLM domain/workgroup to authenticate against.
+	// Empty is correct for a standalone (non-domain-joined) Samba
+	// server.
+	Domain string `json:"domain,omitempty"`
+	// SessionTTLHours is how long an issued session cookie stays
+	// valid before the UI must sign in again. 0 defaults to 24*7 (one
+	// week) — a shop-floor kiosk shouldn't demand re-login every
+	// shift change.
+	SessionTTLHours int `json:"sessionTTLHours,omitempty"`
 }
 
 // Display is one physical surface (typically a reTerminal E1001
