@@ -21,11 +21,26 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mark3labs/mcp-go/server"
+
 	"github.com/filebrowser/filebrowser/v2/cnc"
 	"github.com/filebrowser/filebrowser/v2/cncd"
 )
 
 func main() {
+	// `cncd mcp-stdio [--root ...] [--config ...]` serves the exact
+	// same MCP tool set as the HTTP /mcp mount (cncd/router_mcp.go),
+	// but over stdio: the transport an MCP client normally uses for a
+	// locally-spawned subprocess (Claude Desktop, Fusion's own MCP
+	// client, etc.). No bearer check here — a subprocess this
+	// process's parent spawned directly is its own trust boundary,
+	// the same reasoning docs/CNCD.md gives for GET /api/files being
+	// open on the LAN-only HTTP surface.
+	if len(os.Args) > 1 && os.Args[1] == "mcp-stdio" {
+		runMCPStdio(os.Args[2:])
+		return
+	}
+
 	root := flag.String("root", "", "directory cncd serves (the Samba share); required")
 	listen := flag.String("listen", ":8080", "address to listen on")
 	configPath := flag.String("config", "", "path to the JSON config file (machines, displays, discord, machineToken, baselinePollSeconds); required")
@@ -77,5 +92,44 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("cncd: shutdown: %v", err)
+	}
+}
+
+// runMCPStdio wires up the same Registry + Store + root that main()
+// uses for the HTTP daemon, then serves cncd's MCP tool set
+// (cncd.NewMCPServer) over stdio instead of starting an HTTP server
+// at all. Exits the process on error or on stdin EOF (the client
+// disconnecting), matching server.ServeStdio's own contract.
+func runMCPStdio(args []string) {
+	fs := flag.NewFlagSet("mcp-stdio", flag.ExitOnError)
+	root := fs.String("root", "", "directory cncd serves (the Samba share); required")
+	configPath := fs.String("config", "", "path to the JSON config file (machines, displays, discord, machineToken, baselinePollSeconds); required")
+	_ = fs.Parse(args)
+
+	if *root == "" {
+		log.Fatal("cncd mcp-stdio: --root is required")
+	}
+	if *configPath == "" {
+		log.Fatal("cncd mcp-stdio: --config is required")
+	}
+	if info, err := os.Stat(*root); err != nil || !info.IsDir() {
+		log.Fatalf("cncd mcp-stdio: --root %q is not a directory: %v", *root, err)
+	}
+
+	store, err := cncd.LoadStore(*configPath)
+	if err != nil {
+		log.Fatalf("cncd mcp-stdio: %v", err)
+	}
+
+	registry := cnc.NewRegistry(store)
+	defer registry.Stop()
+
+	mcpServer := cncd.NewMCPServer(cncd.Deps{
+		Registry: registry,
+		Config:   store,
+		Root:     *root,
+	})
+	if err := server.ServeStdio(mcpServer); err != nil {
+		log.Fatalf("cncd mcp-stdio: %v", err)
 	}
 }
