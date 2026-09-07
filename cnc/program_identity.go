@@ -40,7 +40,7 @@ var (
 	gmwPostRe   = regexp.MustCompile(`(?i)^\(\s*GMW-POST\s+(\S+)(?:\s+(.+?))?\s*\)\s*$`)
 	gmwPostedRe = regexp.MustCompile(`(?i)^\(\s*GMW-POSTED\s+(\S+)\s*\)\s*$`)
 	gmwToolsRe  = regexp.MustCompile(`(?i)^\(\s*GMW-TOOLS\s+(\d+)\s*\)\s*$`)
-	gmwShaRe    = regexp.MustCompile(`(?i)^\(\s*GMW-SHA\s+([0-9A-Fa-f]+)\s*\)\s*$`)
+	gmwShaRe    = regexp.MustCompile(`(?i)^\(\s*GMW-SHA\s+([0-9A-Fa-f]+|PENDING)\s*\)\s*$`)
 )
 
 // Identity is the parsed header block. Fields are best-effort — a
@@ -64,6 +64,12 @@ type Identity struct {
 	// ComputedSHA256 is sha256 of the body — everything after the
 	// contiguous run of GMW- lines starting at line 1 — uppercase hex.
 	ComputedSHA256 string
+	// SHAStatus is "match", "mismatch", or "unstamped". The post kernel
+	// has no hash function (docs/PROGRAM_IDENTITY.md), so a post writes
+	// GMW-SHA PENDING and the daemon's ComputedSHA256 is authoritative;
+	// "unstamped" is the normal state for a freshly posted file, not a
+	// fault. Only "mismatch" means the body changed after stamping.
+	SHAStatus string
 	// SHAMatch is true when both are non-empty and equal, case
 	// insensitively.
 	SHAMatch bool
@@ -72,6 +78,15 @@ type Identity struct {
 	// Exposed mostly for tests / debugging.
 	HeaderLineCount int
 }
+
+// GMW-SHA values a post may write instead of a hash. The Fusion post
+// kernel cannot hash, so the stock snippet writes PENDING.
+const (
+	SHAPending     = "PENDING"
+	SHAUnstamped   = "unstamped"
+	SHAMatchStatus = "match"
+	SHAMismatch    = "mismatch"
+)
 
 // ParseIdentity scans nc for a GMW header block starting at line 1.
 // Returns (nil, false) when line 1 is not a valid "(GMW-ID V<n>)"
@@ -104,8 +119,15 @@ func ParseIdentity(nc []byte) (*Identity, bool) {
 	body := nc[consumed:]
 	sum := sha256.Sum256(body)
 	id.ComputedSHA256 = strings.ToUpper(hex.EncodeToString(sum[:]))
-	if id.HeaderSHA256 != "" {
-		id.SHAMatch = strings.EqualFold(id.HeaderSHA256, id.ComputedSHA256)
+	switch {
+	case id.HeaderSHA256 == "" || id.HeaderSHA256 == SHAPending:
+		id.HeaderSHA256 = ""
+		id.SHAStatus = SHAUnstamped
+	case strings.EqualFold(id.HeaderSHA256, id.ComputedSHA256):
+		id.SHAMatch = true
+		id.SHAStatus = SHAMatchStatus
+	default:
+		id.SHAStatus = SHAMismatch
 	}
 
 	return id, true
@@ -532,6 +554,7 @@ type IdentityReport struct {
 	HeaderSHA256   string `json:"header_sha256,omitempty"`
 	ComputedSHA256 string `json:"computed_sha256,omitempty"`
 	SHAMatch       bool   `json:"sha_match"`
+	SHAStatus      string `json:"sha_status"`
 
 	SidecarFound bool   `json:"sidecar_found"`
 	SidecarError string `json:"sidecar_error,omitempty"`
@@ -562,6 +585,7 @@ func BuildIdentityReport(absPath string, nc []byte, table *ToolTable) *IdentityR
 		HeaderSHA256:   id.HeaderSHA256,
 		ComputedSHA256: id.ComputedSHA256,
 		SHAMatch:       id.SHAMatch,
+		SHAStatus:      id.SHAStatus,
 	}
 	if !id.PostedAt.IsZero() {
 		rep.PostedAt = id.PostedAt.Format(time.RFC3339)
