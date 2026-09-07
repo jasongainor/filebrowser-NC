@@ -64,16 +64,28 @@ func main() {
 	registry := cnc.NewRegistry(store)
 	defer registry.Stop()
 
-	handler := cncd.NewRouter(cncd.Deps{
+	deps := cncd.Deps{
 		Registry: registry,
 		Config:   store,
 		Root:     *root,
-	})
+	}
+	handler := cncd.NewRouter(deps)
 
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Job-bucketed root (docs/JOB_FOLDERS.md): file loose root NC
+	// files carrying a GMW header into their job folder every few
+	// seconds. Off entirely when the config disables RootIsJobs or
+	// AutoBucket — see settings.JobsConfig.
+	if cncd.ShouldAutoBucket(deps) {
+		go cncd.RunAutoBucketWatcher(ctx, deps, 0)
 	}
 
 	go func() {
@@ -83,8 +95,6 @@ func main() {
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	<-ctx.Done()
 
 	log.Println("cncd: shutting down")

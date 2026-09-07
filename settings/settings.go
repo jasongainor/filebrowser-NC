@@ -79,6 +79,16 @@ type Cnc struct {
 	// (cncd fills in its own defaults for an unset SMBAddress/TTL).
 	Auth AuthConfig `json:"auth,omitempty"`
 
+	// Jobs configures the job-bucketing layout the served root
+	// presents — one folder per job directly under the share, named
+	// from the program identity header, so the Haas control sees each
+	// job without an extra click into a top-level folder. See
+	// docs/JOB_FOLDERS.md. Additive: a zero-valued Jobs (the shape an
+	// existing config.json round-trips as, since it predates this
+	// field) resolves to the new bucketed-root behavior by default —
+	// see JobsConfig.RootIsJobsResolved/AutoBucketResolved.
+	Jobs JobsConfig `json:"jobs,omitempty"`
+
 	// ── Legacy fields (deprecated; migrated into Machines[0]) ──
 	HaasHost  string `json:"haasHost,omitempty"`
 	HaasPort  int    `json:"haasPort,omitempty"`
@@ -150,6 +160,52 @@ type AuthConfig struct {
 	// week) — a shop-floor kiosk shouldn't demand re-login every
 	// shift change.
 	SessionTTLHours int `json:"sessionTTLHours,omitempty"`
+}
+
+// JobsConfig configures cncd/jobs.go's job-bucketing behavior. Both
+// knobs default to true (the new behavior — see docs/JOB_FOLDERS.md)
+// so an install with no "jobs" key in its config.json at all still
+// gets bucketed-by-default, matching the point of the feature: an
+// operator shouldn't have to hand-edit JSON to get the control's file
+// list down to one click. Both fields are pointers rather than plain
+// bools for exactly that reason — a plain bool's zero value (false)
+// can't be told apart from "never configured," and here that
+// distinction has to flip the default the other way from Go's usual
+// zero-value convention. An explicit `false` is still honored: that's
+// how an admin opts back into "behaves as today."
+type JobsConfig struct {
+	// AutoBucket enables the background watcher that files a loose
+	// root NC file (one carrying a GMW-JOB header) into its job
+	// folder once the file has been stable for a couple of seconds —
+	// see cncd.RunAutoBucketWatcher. nil (the json key absent) and a
+	// literal `true` both mean "on"; only an explicit `false` turns
+	// it off.
+	AutoBucket *bool `json:"autoBucket,omitempty"`
+	// RootIsJobs makes the served root itself the jobs root — one
+	// folder per job directly under --root, no top-level folder to
+	// navigate into first. nil and `true` both mean "on." An explicit
+	// `false` disables both this and AutoBucket regardless of
+	// AutoBucket's own value: bucketing files into job folders only
+	// makes sense when the root IS being presented as the jobs root.
+	RootIsJobs *bool `json:"rootIsJobs,omitempty"`
+}
+
+// AutoBucketResolved reports whether the auto-bucket watcher should
+// run: RootIsJobsResolved() must also be true (see RootIsJobs's doc),
+// and AutoBucket itself must not be explicitly false.
+func (j JobsConfig) AutoBucketResolved() bool {
+	if !j.RootIsJobsResolved() {
+		return false
+	}
+	return j.AutoBucket == nil || *j.AutoBucket
+}
+
+// RootIsJobsResolved reports whether the served root should be
+// presented as the jobs root. Defaults to true — see JobsConfig's
+// doc comment for why a zero-valued (unconfigured) Jobs still
+// resolves "on."
+func (j JobsConfig) RootIsJobsResolved() bool {
+	return j.RootIsJobs == nil || *j.RootIsJobs
 }
 
 // Display is one physical surface (typically a reTerminal E1001

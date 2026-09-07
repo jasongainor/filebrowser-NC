@@ -17,9 +17,18 @@ up on the machine's screen a few seconds later with no panel input.
 
 ## cncd (recommended)
 
-See `docs/CNCD.md` for what cncd actually serves, and
-`docs/SERIAL_TRANSPORT.md` for the direct-RS-232 story this section
-leans on.
+See `docs/CNCD.md` for what cncd actually serves, `docs/SERIAL_TRANSPORT.md`
+for the direct-RS-232 story this section leans on, and `docs/JOB_FOLDERS.md`
+for what actually lives under `$SHARE_PATH`.
+
+**`SHARE_PATH` IS the jobs root** — cncd buckets it into one folder per job
+directly, so there's no extra top-level folder (no `cncFiles/jobs/`, no
+`_INBOX`) to click through on the control. Point the Fusion post's output
+path at `$SHARE_PATH` itself (over the network share it resolves to, e.g.
+`\\pi\cnc\`); cncd's auto-bucket watcher files each posted program into its
+job folder within a few seconds on its own. This is on by default — see
+`docs/JOB_FOLDERS.md`'s "Turning it off" if a shop wants the pre-job-folders
+flat layout back.
 
 ### Fresh-Pi steps
 
