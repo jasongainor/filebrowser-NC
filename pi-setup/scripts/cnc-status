@@ -19,16 +19,22 @@
 set -uo pipefail
 
 CONF=/etc/cnc-pi.conf
+SERVICE=
 SHARE_PATH=
 IMAGE_PATH=
 FB_USER=
 FB_BIN=
 FB_DB=
 ADMIN_USER=
+CNCD_CONFIG_DIR=/etc/cncd
+CNCD_CONFIG=/etc/cncd/config.json
+CNCD_LISTEN=:8080
+SERIAL_LINK_NAME=ttyHAAS
 [[ -r $CONF ]] && {
   # shellcheck disable=SC1090
   . "$CONF" 2>/dev/null || true
 }
+SERVICE=${SERVICE:-cncd}
 
 red()    { printf '\033[31m%s\033[0m' "$*"; }
 green()  { printf '\033[32m%s\033[0m' "$*"; }
@@ -58,16 +64,23 @@ if [[ -r /proc/device-tree/model ]]; then
   info "model:    $(tr -d '\0' </proc/device-tree/model)"
 fi
 info "config:   $CONF $([[ -r $CONF ]] && echo found || echo not found)"
+info "service:  $SERVICE"
 
-# ── /etc/cnc-pi.conf snapshot (passwords masked) ──────────────────────────
+# ── /etc/cnc-pi.conf snapshot (passwords/tokens masked) ───────────────────
 section "configured paths"
 if [[ -r $CONF ]]; then
   info "share:    ${SHARE_PATH:-(unset)}"
   info "image:    ${IMAGE_PATH:-(unset)}"
-  info "fb_user:  ${FB_USER:-(unset)}"
-  info "fb_bin:   ${FB_BIN:-(unset)} $([[ -x ${FB_BIN:-/dev/null} ]] && echo '(executable)' || echo '(missing)')"
-  info "fb_db:    ${FB_DB:-(unset)}"
-  info "admin:    ${ADMIN_USER:-(unset)}  (password masked — grep ADMIN /etc/cnc-pi.conf to see it)"
+  if [[ $SERVICE == cncd ]]; then
+    info "cncd_bin: ${CNCD_BIN:-/usr/local/bin/cncd} $([[ -x ${CNCD_BIN:-/usr/local/bin/cncd} ]] && echo '(executable)' || echo '(missing)')"
+    info "config:   $CNCD_CONFIG $([[ -r $CNCD_CONFIG ]] && echo found || echo not found)"
+    info "env:      $CNCD_CONFIG_DIR/env $([[ -r $CNCD_CONFIG_DIR/env ]] && echo found || echo not found)  (token masked — see below)"
+  else
+    info "fb_user:  ${FB_USER:-(unset)}"
+    info "fb_bin:   ${FB_BIN:-(unset)} $([[ -x ${FB_BIN:-/dev/null} ]] && echo '(executable)' || echo '(missing)')"
+    info "fb_db:    ${FB_DB:-(unset)}"
+    info "admin:    ${ADMIN_USER:-(unset)}  (password masked — grep ADMIN /etc/cnc-pi.conf to see it)"
+  fi
 else
   warn "config not loaded — run pi-setup/setup-pi.sh first"
 fi
@@ -105,7 +118,7 @@ fi
 
 # ── systemd units ─────────────────────────────────────────────────────────
 section "services"
-for unit in filebrowser cnc-usb-mass-storage cnc-usb-watcher smbd nmbd avahi-daemon; do
+for unit in cncd filebrowser cnc-usb-mass-storage cnc-usb-watcher smbd nmbd avahi-daemon; do
   if systemctl list-unit-files --type=service --no-legend "$unit.service" 2>/dev/null | grep -q .; then
     if systemctl is-active --quiet "$unit"; then
       ok "$unit  (active)"
@@ -117,18 +130,74 @@ for unit in filebrowser cnc-usb-mass-storage cnc-usb-watcher smbd nmbd avahi-dae
   fi
 done
 
-# ── /api/cnc/status ───────────────────────────────────────────────────────
-section "/api/cnc/status (no auth → expect 401 if filebrowser is up)"
-if command -v curl >/dev/null; then
-  http_code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/cnc/status 2>/dev/null || echo "000")
-  case $http_code in
-    200) ok "200 — endpoint reachable AND no auth required (unusual)" ;;
-    401) ok "401 — endpoint reachable, auth working" ;;
-    000) bad "could not reach 127.0.0.1:8080 — filebrowser not running?" ;;
-    *)   warn "unexpected status: $http_code" ;;
-  esac
+# ── HTTP health ────────────────────────────────────────────────────────────
+if [[ $SERVICE == cncd ]]; then
+  section "cncd HTTP (${CNCD_LISTEN})"
+  if command -v curl >/dev/null; then
+    port=${CNCD_LISTEN##*:}
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port:-8080}/healthz" 2>/dev/null || echo "000")
+    case $http_code in
+      200) ok "/healthz 200 — cncd is up" ;;
+      000) bad "could not reach 127.0.0.1:${port:-8080} — cncd not running?" ;;
+      *)   warn "/healthz unexpected status: $http_code" ;;
+    esac
+
+    # /api/cnc/state requires the bearer. Read the token from
+    # /etc/cncd/env (CNCD_MACHINE_TOKEN=…) but never print it — only
+    # whether the file/variable are present and what the HTTP result was.
+    token=""
+    if [[ -r $CNCD_CONFIG_DIR/env ]]; then
+      # shellcheck disable=SC1090
+      token=$(. "$CNCD_CONFIG_DIR/env" 2>/dev/null; printf '%s' "${CNCD_MACHINE_TOKEN:-}")
+    fi
+    if [[ -n $token ]]; then
+      state_code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" \
+                     "http://127.0.0.1:${port:-8080}/api/cnc/state" 2>/dev/null || echo "000")
+      case $state_code in
+        200) ok "/api/cnc/state 200 — token in $CNCD_CONFIG_DIR/env is valid" ;;
+        401) bad "/api/cnc/state 401 — token in $CNCD_CONFIG_DIR/env does NOT match config.json's machineToken" ;;
+        000) bad "could not reach 127.0.0.1:${port:-8080}/api/cnc/state" ;;
+        *)   warn "/api/cnc/state unexpected status: $state_code" ;;
+      esac
+    else
+      warn "no CNCD_MACHINE_TOKEN in $CNCD_CONFIG_DIR/env — cannot check /api/cnc/state auth (token itself not shown here)"
+    fi
+  else
+    info "(curl not installed — skipping)"
+  fi
+
+  # ── Serial adapter ────────────────────────────────────────────────────
+  section "serial adapter (docs/SERIAL_TRANSPORT.md)"
+  if [[ -e /dev/$SERIAL_LINK_NAME ]]; then
+    target=$(readlink -f "/dev/$SERIAL_LINK_NAME" 2>/dev/null || echo "?")
+    ok "/dev/$SERIAL_LINK_NAME present -> $target"
+  else
+    warn "/dev/$SERIAL_LINK_NAME not present — adapter unplugged, or the udev rule/serial setup step hasn't run"
+    info "    check: udevadm info -q property -n /dev/ttyUSB0  (if the adapter shows up as ttyUSB0)"
+  fi
+  if [[ -f /etc/udev/rules.d/99-cnc-serial.rules ]]; then
+    ok "udev rule installed: /etc/udev/rules.d/99-cnc-serial.rules"
+  else
+    info "no /etc/udev/rules.d/99-cnc-serial.rules — serial setup was skipped or not yet run"
+  fi
+  if [[ -n ${FB_USER:-} ]] && id -nG "$FB_USER" 2>/dev/null | grep -qw dialout; then
+    ok "$FB_USER is in the dialout group"
+  elif [[ -n ${FB_USER:-} ]]; then
+    warn "$FB_USER is NOT in the dialout group — cncd cannot open the serial device"
+  fi
 else
-  info "(curl not installed — skipping)"
+  section "/api/cnc/status (no auth → expect 401 if filebrowser is up)"
+  if command -v curl >/dev/null; then
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/cnc/status 2>/dev/null || echo "000")
+    case $http_code in
+      200) ok "200 — endpoint reachable AND no auth required (unusual)" ;;
+      401) ok "401 — endpoint reachable, auth working" ;;
+      000) bad "could not reach 127.0.0.1:8080 — filebrowser not running?" ;;
+      *)   warn "unexpected status: $http_code" ;;
+    esac
+  else
+    info "(curl not installed — skipping)"
+  fi
 fi
 
 # ── Image vs share ────────────────────────────────────────────────────────
@@ -159,7 +228,7 @@ fi
 
 # ── Recent journal tails ──────────────────────────────────────────────────
 section "recent logs (last 5 lines per service)"
-for unit in filebrowser cnc-usb-watcher cnc-usb-mass-storage; do
+for unit in cncd filebrowser cnc-usb-watcher cnc-usb-mass-storage; do
   if systemctl list-unit-files --type=service --no-legend "$unit.service" 2>/dev/null | grep -q .; then
     printf '\n  %s\n' "$(bold "[$unit]")"
     indent journalctl -u "$unit" -n 5 --no-pager

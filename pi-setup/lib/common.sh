@@ -3,6 +3,13 @@
 
 CONF_PATH="/etc/cnc-pi.conf"
 
+# DRY_RUN=1 — print every mutating/networked command instead of running it.
+# Exists so setup-pi.sh can be exercised on a box with no sudo, no network,
+# and no real Pi hardware (dev laptop, CI). Read-only checks (version
+# probes, `ask` prompts) still run for real so the script's branching logic
+# gets exercised too, not just its logging.
+DRY_RUN=${DRY_RUN:-0}
+
 c_red()   { printf '\033[31m%s\033[0m' "$*"; }
 c_green() { printf '\033[32m%s\033[0m' "$*"; }
 c_yellow(){ printf '\033[33m%s\033[0m' "$*"; }
@@ -23,8 +30,24 @@ step() {
   printf '\n\033[1;36m==> [Step %d]\033[0m \033[1m%s\033[0m\n' "$STEP_NUM" "$*"
 }
 
+# run <cmd> [args…] — execute for real, or under DRY_RUN=1 just print what
+# would have run and return success. Every mutating/networked call in the
+# cncd + serial install paths goes through this so a dry run never touches
+# apt, systemd, udev, or the filesystem outside $TMPDIR.
+run() {
+  if [[ $DRY_RUN == 1 ]]; then
+    printf '  %s %s\n' "$(c_dim '[dry-run]')" "$(printf '%q ' "$@")"
+    return 0
+  fi
+  "$@"
+}
+
 # require_root — re-exec under sudo if not already root.
 require_root() {
+  if [[ $DRY_RUN == 1 ]]; then
+    log "DRY_RUN=1 — skipping root check (no elevation, no re-exec)"
+    return 0
+  fi
   if [[ $EUID -ne 0 ]]; then
     log "Re-running with sudo…"
     exec sudo --preserve-env=HOME -E -- "$0" "$@"
@@ -116,6 +139,12 @@ write_conf() {
       printf '%s=%q\n' "$k" "$v"
     done
   } > "$tmp"
+  if [[ $DRY_RUN == 1 ]]; then
+    log "[dry-run] would write $CONF_PATH:"
+    sed 's/^/      /' "$tmp"
+    rm -f "$tmp"
+    return 0
+  fi
   install -m 0644 "$tmp" "$CONF_PATH"
   rm -f "$tmp"
   ok "wrote $CONF_PATH"
@@ -131,6 +160,11 @@ render_template() {
     local k=${kv%%=*} v=${kv#*=}
     content=${content//"@@${k}@@"/$v}
   done
+  if [[ $DRY_RUN == 1 ]]; then
+    log "[dry-run] would write $out:"
+    printf '%s\n' "$content" | sed 's/^/      /'
+    return 0
+  fi
   printf '%s' "$content" > "$out"
 }
 
@@ -142,14 +176,14 @@ ensure_pkgs() {
   done
   if (( ${#missing[@]} )); then
     log "installing: ${missing[*]}"
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+    run env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
   fi
 }
 
 # enable_now <unit>
 enable_now() {
   local unit=$1
-  systemctl daemon-reload
-  systemctl enable --now "$unit"
+  run systemctl daemon-reload
+  run systemctl enable --now "$unit"
 }
