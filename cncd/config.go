@@ -10,8 +10,11 @@
 package cncd
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 
@@ -64,7 +67,32 @@ func LoadStore(path string) (*Store, error) {
 	default:
 		return nil, fmt.Errorf("cncd: read config %s: %w", path, err)
 	}
+	// A box with no machine token would answer 401 to everything that
+	// matters (state, qcode, MCP, the files API's writes). Mint one on
+	// first boot the same way filebrowser's settings tab does, persist
+	// it, and say where it is — never what it is.
+	if s.cnc.MachineToken == "" {
+		tok, err := mintMachineToken()
+		if err != nil {
+			return nil, fmt.Errorf("cncd: mint machine token: %w", err)
+		}
+		s.cnc.MachineToken = tok
+		if err := s.persist(); err != nil {
+			return nil, fmt.Errorf("cncd: persist minted machine token %s: %w", path, err)
+		}
+		log.Printf("cncd: minted a machine token into %s (machineToken)", path)
+	}
 	return s, nil
+}
+
+// mintMachineToken mirrors http/cnc.go's cncMachineTokenMintHandler:
+// 32 random bytes, URL-safe base64, no padding.
+func mintMachineToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 // Get implements the settingsReader interface the cnc package expects
@@ -94,10 +122,19 @@ func (s *Store) Snapshot() settings.Cnc {
 func (s *Store) Update(fn func(cnc *settings.Cnc) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := fn(&s.cnc); err != nil {
+	// Mutate a copy so a failing fn cannot leave half-applied state in
+	// memory; only a successful edit becomes the live config.
+	next := s.cnc
+	if err := fn(&next); err != nil {
 		return err
 	}
-	return s.persist()
+	prev := s.cnc
+	s.cnc = next
+	if err := s.persist(); err != nil {
+		s.cnc = prev
+		return err
+	}
+	return nil
 }
 
 // persist writes the current config to disk. Caller must hold s.mu

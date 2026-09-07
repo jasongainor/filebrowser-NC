@@ -601,3 +601,27 @@ func TestParseIdentityShaStatusValues(t *testing.T) {
 		t.Fatalf("absent GMW-SHA must be unstamped, got %q", id3.SHAStatus)
 	}
 }
+
+func TestParseIdentityHeaderAfterTapeMarkerAndONumber(t *testing.T) {
+	// What a Haas post actually writes: %, the O-number line, then the
+	// header block. The body hash covers everything after the block.
+	nc := []byte("%\nO01020 (F-BRACKET)\n(GMW-ID V1)\n(GMW-JOB J000020 OP10)\n(GMW-SHA PENDING)\nG20 G17\nM30\n%\n")
+	id, ok := ParseIdentity(nc)
+	if !ok || id == nil {
+		t.Fatal("header behind % and O-number must be found")
+	}
+	if id.Job != "J000020" || id.Operation != "OP10" || id.SHAStatus != SHAUnstamped {
+		t.Fatalf("unexpected identity: %+v", id)
+	}
+	if id.HeaderLineCount != 3 {
+		t.Fatalf("header line count = %d, want 3", id.HeaderLineCount)
+	}
+	// A comment before the header is not a preamble.
+	if _, ok := ParseIdentity([]byte("%\n(SETUP SHEET)\n(GMW-ID V1)\nM30\n")); ok {
+		t.Fatal("a comment before GMW-ID must not count as preamble")
+	}
+	// Too long a preamble is not scanned.
+	if _, ok := ParseIdentity([]byte("%\n\n\n\n(GMW-ID V1)\nM30\n")); ok {
+		t.Fatal("preamble longer than maxPreambleLines must not be scanned")
+	}
+}
