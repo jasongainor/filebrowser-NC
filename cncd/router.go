@@ -55,6 +55,7 @@ func NewRouter(d Deps) http.Handler {
 	})
 
 	api := r.PathPrefix("/api").Subrouter()
+	registerLogin(api, d)
 
 	cncRouter := api.PathPrefix("/cnc").Subrouter()
 	cncRouter.HandleFunc("/state", d.stateHandler).Methods("GET")

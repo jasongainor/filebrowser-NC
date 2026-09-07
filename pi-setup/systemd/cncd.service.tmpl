@@ -1,0 +1,36 @@
+[Unit]
+Description=cncd — headless CNC daemon (serves @@ROOT@@)
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@@CNCD_USER@@
+Group=@@CNCD_USER@@
+
+# GMW_MES_BOT_TOKEN and similar shared secrets live here, not in this unit
+# file or in config.json's tracked defaults. The leading "-" means a
+# missing file is not a failure — a fresh install has nothing to source
+# yet. See pi-setup/README.md's cncd section for what goes in this file.
+EnvironmentFile=-/etc/cncd/env
+
+ExecStart=@@CNCD_BIN@@ --root @@ROOT@@ --config @@CONFIG@@ --listen @@LISTEN@@
+Restart=always
+RestartSec=3
+
+# The USB→RS-232 adapter (docs/SERIAL_TRANSPORT.md) is group dialout,
+# mode 0660 (see the udev rule pi-setup/lib/serial.sh writes) — this is
+# what lets a non-root cncd process open it.
+SupplementaryGroups=dialout
+
+# Hardening. cncd's whole job is to serve @@ROOT@@ (the Samba share) and
+# read/write @@CONFIG@@'s directory — nothing else on disk needs to move
+# for it to work, so ProtectSystem=strict + an explicit allowlist is safe
+# here in a way it isn't for filebrowser (which persists into ~/.config).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=@@ROOT@@ /etc/cncd
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
