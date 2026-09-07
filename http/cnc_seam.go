@@ -13,7 +13,9 @@ package fbhttp
 // byte-for-byte unchanged.
 
 import (
+	"github.com/filebrowser/filebrowser/v2/cnc"
 	"github.com/filebrowser/filebrowser/v2/cncapi"
+	"github.com/filebrowser/filebrowser/v2/settings"
 	"github.com/filebrowser/filebrowser/v2/users"
 )
 
@@ -65,4 +67,37 @@ func (d *data) authz() cncapi.Authz {
 		return userAuthz{u: d.user}
 	}
 	return cncapi.StaticAuthz{Modify: true, Admin: true}
+}
+
+// settingsStore adapts *data to cncapi.SettingsStore: Snapshot reads
+// the in-memory settings.Cnc already hydrated onto d by handle()
+// (http/data.go), and Update mutates that same document in place
+// before persisting the *whole* settings.Settings document through
+// d.store.Settings.Save — filebrowser has no narrower "just the Cnc
+// sub-document" save path, so a shared handler that only touches
+// .Cnc still gets everything else round-tripped for free.
+type settingsStore struct {
+	d *data
+}
+
+func (s settingsStore) Snapshot() settings.Cnc { return s.d.settings.Cnc }
+
+func (s settingsStore) Update(fn func(*settings.Cnc) error) error {
+	if err := fn(&s.d.settings.Cnc); err != nil {
+		return err
+	}
+	return s.d.store.Settings.Save(s.d.settings)
+}
+
+// cncapiDeps builds the cncapi.Deps a shared handler needs from this
+// request's *data plus the live registry (which isn't reachable from
+// *data itself — every http/cnc*.go handler closes over it via its
+// constructor, e.g. cncStartHandler(registry *cnc.Registry)).
+func (d *data) cncapiDeps(registry *cnc.Registry) cncapi.Deps {
+	return cncapi.Deps{
+		Registry: registry,
+		Resolver: d.pathResolver(),
+		Authz:    d.authz(),
+		Store:    settingsStore{d: d},
+	}
 }

@@ -39,7 +39,7 @@ func randHex(n int) string {
 // generated ID; FilePath is user-scope-relative so the same path
 // works for any operator with read access to that share.
 type QueueItem struct {
-	ID   string `json:"id"`
+	ID string `json:"id"`
 	// FilePath is the user-scope-relative path the queue knows about.
 	// Resolved to an absolute on disk per operator at send time —
 	// shared queue, multi-user share.
@@ -265,6 +265,37 @@ func (qs *QueueStore) MarkSending(machineID, id, method string) (*QueueItem, err
 		return nil, fmt.Errorf("queue item %s not found", id)
 	}
 	return hit, qs.persistLocked(machineID)
+}
+
+// PromoteByID marks the item with id "running", demoting any other
+// sending/running row back to "queued" (only one item is in-flight
+// per machine). Manual, ID-addressed counterpart to
+// PromoteByONumber: an operator uses this to confirm "this queued
+// file is what's running" when the automatic O-number match (driven
+// by the streamer's auto-attach watcher, see Registry.watchQueueAutoMatch)
+// hasn't fired yet — e.g. a custom macro wrapper obscures the real
+// O-number echo. Returns an error when id doesn't match any row in
+// machineID's queue.
+func (qs *QueueStore) PromoteByID(machineID, id string) (*QueueItem, error) {
+	qs.mu.Lock()
+	defer qs.mu.Unlock()
+	src := qs.queues[machineID]
+	var hit *QueueItem
+	for i := range src {
+		if src[i].ID == id {
+			src[i].State = QueueStateRunning
+			hit = &src[i]
+			continue
+		}
+		if src[i].State == QueueStateRunning {
+			src[i].State = QueueStateQueued
+		}
+	}
+	if hit == nil {
+		return nil, fmt.Errorf("queue item %s not found", id)
+	}
+	out := *hit
+	return &out, qs.persistLocked(machineID)
 }
 
 // FindByONumber returns a copy of the first queue item whose
