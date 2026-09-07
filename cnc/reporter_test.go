@@ -553,3 +553,247 @@ func TestReporter_RestartRecoveryClosesOpenRun(t *testing.T) {
 		t.Fatal("expected the run marker to be cleared after recovery")
 	}
 }
+
+// ── run kind ──────────────────────────────────────────────────────────
+
+// gmwStampedProgramWithKind is gmwStampedProgram plus a GMW-KIND line,
+// for the open-run-carries-kind-from-header tests below.
+func gmwStampedProgramWithKind(t *testing.T, dir, kindToken string) string {
+	t.Helper()
+	p := filepath.Join(dir, "part.nc")
+	content := "(GMW-ID V1)\n" +
+		"(GMW-JOB J000020 OP10)\n" +
+		"(GMW-PART F-BRACKET-REV-C)\n" +
+		"(GMW-KIND " + kindToken + ")\n" +
+		"(GMW-SHA PENDING)\n" +
+		"O0057\n" +
+		"G20 G17 G90\n" +
+		"M30\n"
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatalf("write program: %v", err)
+	}
+	return p
+}
+
+func TestReporter_OpenRun_KindFromHeader(t *testing.T) {
+	t.Setenv("CNC_STATE_DIR", t.TempDir())
+	srv, reqs := captureServer(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"run":{"id":"run-kind-1"},"linked":true}`))
+	})
+
+	fs := reportingSettings(srv.URL, "")
+	r := NewReporter(fs)
+	st := New(fs, "mill-1")
+	stop := startWatch(t, r, "mill-1", st)
+	defer stop()
+
+	progDir := t.TempDir()
+	absPath := gmwStampedProgramWithKind(t, progDir, "PROD")
+
+	startedAt := time.Now().UTC()
+	j := &job{id: "job-kind-1", displayPath: "/jobs/part.nc", absPath: absPath, startedAt: startedAt, lineTotal: 3}
+	if err := writeMarkerFor("mill-1", j); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	st.emit(Event{Type: "status", Status: &Status{
+		Running: true, JobID: "job-kind-1", FilePath: "/jobs/part.nc", StartedAt: startedAt,
+	}})
+
+	req := waitReq(t, reqs)
+	if req.body["kind"] != RunKindProduction {
+		t.Errorf("kind = %v, want %q", req.body["kind"], RunKindProduction)
+	}
+}
+
+func TestReporter_OpenRun_KindAbsentWhenHeaderOmitsIt(t *testing.T) {
+	t.Setenv("CNC_STATE_DIR", t.TempDir())
+	srv, reqs := captureServer(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"run":{"id":"run-kind-2"},"linked":true}`))
+	})
+
+	fs := reportingSettings(srv.URL, "")
+	r := NewReporter(fs)
+	st := New(fs, "mill-1")
+	stop := startWatch(t, r, "mill-1", st)
+	defer stop()
+
+	progDir := t.TempDir()
+	absPath := gmwStampedProgram(t, progDir) // no GMW-KIND line
+
+	startedAt := time.Now().UTC()
+	j := &job{id: "job-kind-2", displayPath: "/jobs/part.nc", absPath: absPath, startedAt: startedAt, lineTotal: 3}
+	if err := writeMarkerFor("mill-1", j); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	st.emit(Event{Type: "status", Status: &Status{
+		Running: true, JobID: "job-kind-2", FilePath: "/jobs/part.nc", StartedAt: startedAt,
+	}})
+
+	req := waitReq(t, reqs)
+	if _, present := req.body["kind"]; present {
+		t.Errorf("expected no kind field in create body, got %v", req.body["kind"])
+	}
+}
+
+func TestReporter_SetKind_NoOpenRun_ReturnsFalse(t *testing.T) {
+	t.Setenv("CNC_STATE_DIR", t.TempDir())
+	fs := &fakeSettings{s: &settings.Settings{}}
+	r := NewReporter(fs)
+	if r.SetKind("mill-1", RunKindTrial) {
+		t.Fatal("expected SetKind to return false with no open run")
+	}
+}
+
+func TestReporter_SetKind_PatchesOpenRunAndRemembersForClose(t *testing.T) {
+	t.Setenv("CNC_STATE_DIR", t.TempDir())
+	srv, reqs := captureServer(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/machine/runs" {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"run":{"id":"run-setkind"},"linked":true}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"run":{},"carbon":{"attempted":false}}`))
+	})
+
+	fs := reportingSettings(srv.URL, "")
+	r := NewReporter(fs)
+	st := New(fs, "mill-1")
+	stop := startWatch(t, r, "mill-1", st)
+	defer stop()
+
+	startedAt := time.Now().UTC()
+	st.emit(Event{Type: "status", Status: &Status{Running: true, JobID: "job-setkind", FilePath: "/x.nc", StartedAt: startedAt}})
+	waitReq(t, reqs) // create — establishes run_id before SetKind's PATCH can be sent
+
+	if !r.SetKind("mill-1", RunKindProduction) {
+		t.Fatal("expected SetKind to report an open run")
+	}
+
+	setKindReq := waitReq(t, reqs)
+	if setKindReq.method != http.MethodPatch || setKindReq.path != "/api/machine/runs/run-setkind" {
+		t.Fatalf("want PATCH /api/machine/runs/run-setkind, got %s %s", setKindReq.method, setKindReq.path)
+	}
+	if setKindReq.body["kind"] != RunKindProduction {
+		t.Errorf("kind = %v, want %q", setKindReq.body["kind"], RunKindProduction)
+	}
+	// SetKind's PATCH must be a pure {"kind": ...} body — it shouldn't
+	// carry any of the close-only fields.
+	if _, present := setKindReq.body["outcome"]; present {
+		t.Errorf("unexpected outcome field in SetKind's PATCH body: %v", setKindReq.body)
+	}
+
+	// The marker on disk reflects the override immediately, independent
+	// of whether the PATCH above has landed.
+	if marker := readOpenRunMarker("mill-1"); marker == nil || marker.Kind != RunKindProduction {
+		t.Fatalf("run marker kind = %+v, want %q", marker, RunKindProduction)
+	}
+
+	if err := AppendJobHistory("mill-1", JobHistoryEntry{
+		JobID: "job-setkind", MachineID: "mill-1", StartedAt: startedAt, EndedAt: time.Now().UTC(),
+		LineTotal: 10, LineFinal: 10, Status: "completed",
+	}); err != nil {
+		t.Fatalf("append job history: %v", err)
+	}
+	st.emit(Event{Type: "status", Status: &Status{Running: false, JobID: "job-setkind", FilePath: "/x.nc"}})
+
+	closeReq := waitReq(t, reqs)
+	if closeReq.method != http.MethodPatch || closeReq.path != "/api/machine/runs/run-setkind" {
+		t.Fatalf("want PATCH /api/machine/runs/run-setkind (close), got %s %s", closeReq.method, closeReq.path)
+	}
+	if closeReq.body["kind"] != RunKindProduction {
+		t.Errorf("close kind = %v, want %q (remembered from SetKind)", closeReq.body["kind"], RunKindProduction)
+	}
+	if closeReq.body["outcome"] != "completed" {
+		t.Errorf("outcome = %v, want completed", closeReq.body["outcome"])
+	}
+}
+
+func TestReporter_OpenRunInfo(t *testing.T) {
+	t.Setenv("CNC_STATE_DIR", t.TempDir())
+	srv, reqs := captureServer(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"run":{"id":"run-info-1"},"linked":true}`))
+	})
+
+	fs := reportingSettings(srv.URL, "")
+	r := NewReporter(fs)
+	st := New(fs, "mill-1")
+	stop := startWatch(t, r, "mill-1", st)
+	defer stop()
+
+	if _, _, ok := r.OpenRunInfo("mill-1"); ok {
+		t.Fatal("expected no open run before anything starts")
+	}
+
+	st.emit(Event{Type: "status", Status: &Status{Running: true, JobID: "job-info", FilePath: "/x.nc", StartedAt: time.Now().UTC()}})
+	waitReq(t, reqs)
+	// waitReq only proves the fake server has answered the create
+	// call — the worker goroutine still needs to read that response
+	// and call setRunID before OpenRunInfo/SetKind have anything to
+	// report. Poll rather than race it.
+	deadline := time.Now().Add(2 * time.Second)
+	for r.getOpen("mill-1") == nil || r.getOpen("mill-1").RunID == "" {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the create call's run_id to land")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	r.SetKind("mill-1", RunKindRnd)
+
+	kind, runID, ok := r.OpenRunInfo("mill-1")
+	if !ok {
+		t.Fatal("expected an open run after start")
+	}
+	if kind != RunKindRnd {
+		t.Errorf("kind = %q, want %q", kind, RunKindRnd)
+	}
+	if runID != "run-info-1" {
+		t.Errorf("run_id = %q, want run-info-1", runID)
+	}
+}
+
+// TestReporter_RunMarker_KindRoundTrip exercises the same restart path
+// as TestReporter_RestartRecoveryClosesOpenRun but with a Kind set on
+// the orphaned marker, asserting it survives the JSON round trip and
+// is carried into the recovery close's PATCH body.
+func TestReporter_RunMarker_KindRoundTrip(t *testing.T) {
+	t.Setenv("CNC_STATE_DIR", t.TempDir())
+	srv, reqs := captureServer(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"run":{},"carbon":{"attempted":false}}`))
+	})
+
+	if err := writeOpenRunMarker("mill-1", &openRun{
+		RunID: "run-orphan-kind", MachineID: "mill-1", Kind: RunKindTrial,
+		LastParts: 3, StartedAt: time.Now().Add(-time.Hour).UTC(),
+	}); err != nil {
+		t.Fatalf("seed marker: %v", err)
+	}
+
+	// Confirm the plain marshal/unmarshal round trip too, independent
+	// of the recovery flow below — readOpenRunMarker doesn't consume
+	// the file, so the marker seeded above is still there for Watch's
+	// own recovery read.
+	if got := readOpenRunMarker("mill-1"); got == nil || got.Kind != RunKindTrial {
+		t.Fatalf("readOpenRunMarker round-trip: got %+v, want Kind=%q", got, RunKindTrial)
+	}
+
+	fs := reportingSettings(srv.URL, "")
+	r := NewReporter(fs)
+	st := New(fs, "mill-1")
+	stop := startWatch(t, r, "mill-1", st)
+	defer stop()
+
+	req := waitReq(t, reqs)
+	if req.path != "/api/machine/runs/run-orphan-kind" || req.method != http.MethodPatch {
+		t.Fatalf("want the recovery close to PATCH run-orphan-kind, got %s %s", req.method, req.path)
+	}
+	if req.body["kind"] != RunKindTrial {
+		t.Errorf("kind = %v, want %q (carried over from the marker)", req.body["kind"], RunKindTrial)
+	}
+}

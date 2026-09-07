@@ -63,19 +63,28 @@ type reportTask func(ctx context.Context)
 // the next Watch call so a daemon restart can still close a run that
 // was open when it went down.
 type openRun struct {
-	RunID         string    `json:"run_id"`
-	JobID         string    `json:"job_id,omitempty"` // streamer job id; ties this run back to job_history.go's outcome on close. Empty for an attach-only run.
-	MachineID     string    `json:"machine_id"`
-	JobReadableID string    `json:"job_readable_id,omitempty"`
-	OperationRef  string    `json:"operation_ref,omitempty"`
-	PartID        string    `json:"part_id,omitempty"`
-	ProgramSHA256 string    `json:"program_sha256,omitempty"`
-	ONumber       string    `json:"o_number,omitempty"`
-	FileName      string    `json:"file_name,omitempty"`
-	StartedAt     time.Time `json:"started_at"`
-	LastParts     int       `json:"last_parts,omitempty"`
-	HadError      bool      `json:"had_error,omitempty"`
-	LastErrorMsg  string    `json:"last_error_msg,omitempty"`
+	RunID         string `json:"run_id"`
+	JobID         string `json:"job_id,omitempty"` // streamer job id; ties this run back to job_history.go's outcome on close. Empty for an attach-only run.
+	MachineID     string `json:"machine_id"`
+	JobReadableID string `json:"job_readable_id,omitempty"`
+	OperationRef  string `json:"operation_ref,omitempty"`
+	PartID        string `json:"part_id,omitempty"`
+	ProgramSHA256 string `json:"program_sha256,omitempty"`
+	ONumber       string `json:"o_number,omitempty"`
+	FileName      string `json:"file_name,omitempty"`
+	// Kind classifies the run (cnc.RunKindTrial/Production/Rnd),
+	// empty when nobody's said — gmw-mes's own default rule then
+	// applies. Set at open time from the program's GMW-KIND header
+	// (ParseIdentity), and/or later by an operator override via
+	// SetKind, which also PATCHes it to gmw-mes immediately so the
+	// eventual close carries the same value even if that PATCH is
+	// dropped. Persisted in the run marker so a daemon restart
+	// doesn't lose an override made just before it went down.
+	Kind         string    `json:"kind,omitempty"`
+	StartedAt    time.Time `json:"started_at"`
+	LastParts    int       `json:"last_parts,omitempty"`
+	HadError     bool      `json:"had_error,omitempty"`
+	LastErrorMsg string    `json:"last_error_msg,omitempty"`
 }
 
 // Reporter posts program-run lifecycle events to gmw-mes. One
@@ -298,6 +307,7 @@ func (r *Reporter) openRunFromJob(machineID string, status *Status) {
 				run.JobReadableID = id.Job
 				run.OperationRef = id.Operation
 				run.PartID = id.Part
+				run.Kind = id.Kind
 				if id.ComputedSHA256 != "" {
 					run.ProgramSHA256 = strings.ToLower(id.ComputedSHA256)
 				}
@@ -414,6 +424,46 @@ func (r *Reporter) reportError(machineID, message string) {
 	r.enqueue(machineID, func(ctx context.Context) {
 		r.doEvent(ctx, machineID, run, "error", map[string]any{"message": message})
 	})
+}
+
+// SetKind overrides the kind (RunKindTrial/Production/Rnd — see
+// program_identity.go) of machineID's currently open run: it takes
+// effect in memory and in the run marker immediately, PATCHes it to
+// gmw-mes right away, and is remembered so the run's eventual close
+// PATCH carries the same value even if this immediate PATCH is
+// dropped after retries. This is the daemon's side of the operator
+// override described in docs/RUN_REPORTING.md — the cncd
+// /api/cnc/run-kind route is the only caller. Returns false when no
+// run is currently open for machineID (including when reporting is
+// unconfigured, since Reporter tracks no open runs at all then) —
+// the route turns that into a 409.
+func (r *Reporter) SetKind(machineID, kind string) bool {
+	run := r.getOpen(machineID)
+	if run == nil {
+		return false
+	}
+	r.mu.Lock()
+	run.Kind = kind
+	r.mu.Unlock()
+	r.persistOpen(machineID, run)
+	r.enqueue(machineID, func(ctx context.Context) {
+		r.doSetKind(ctx, machineID, run, kind)
+	})
+	return true
+}
+
+// OpenRunInfo returns the kind and gmw-mes run_id of machineID's
+// currently open run. ok is false when nothing is open — same "no
+// run tracked while reporting is unconfigured" caveat as SetKind.
+// Used by the /api/cnc/run-kind GET route and to add the run_kind/
+// run_id fields to /api/cnc/state's snapshot.
+func (r *Reporter) OpenRunInfo(machineID string) (kind, runID string, ok bool) {
+	run := r.getOpen(machineID)
+	if run == nil {
+		return "", "", false
+	}
+	snap := r.snapshot(run)
+	return snap.Kind, snap.RunID, true
 }
 
 // ── in-memory state helpers — all access to open/oNumber/openRun
@@ -616,6 +666,9 @@ func (r *Reporter) doCreate(ctx context.Context, machineID string, run *openRun)
 	if snap.FileName != "" {
 		body["file_name"] = snap.FileName
 	}
+	if snap.Kind != "" {
+		body["kind"] = snap.Kind
+	}
 
 	respBody, _, err := r.send(ctx, cfg, http.MethodPost, "/api/machine/runs", body)
 	if err != nil {
@@ -653,6 +706,25 @@ func (r *Reporter) doEvent(ctx context.Context, machineID string, run *openRun, 
 	}
 }
 
+// doSetKind is SetKind's queued half — an immediate best-effort PATCH
+// of {kind} to the open run. A no-op (not an error) when create never
+// got a run_id yet, same rule as doEvent; the run's own Kind field is
+// already updated by SetKind regardless, so the eventual close PATCH
+// carries it even when this one is dropped.
+func (r *Reporter) doSetKind(ctx context.Context, machineID string, run *openRun, kind string) {
+	cfg, ok := r.config()
+	if !ok {
+		return
+	}
+	runID := r.runID(run)
+	if runID == "" {
+		return
+	}
+	if _, _, err := r.send(ctx, cfg, http.MethodPatch, "/api/machine/runs/"+runID, map[string]any{"kind": kind}); err != nil {
+		r.logDrop(machineID, "set kind", err)
+	}
+}
+
 func (r *Reporter) doClose(ctx context.Context, machineID string, run *openRun, outcome string, parts int, errMsg string) {
 	cfg, ok := r.config()
 	if !ok {
@@ -669,6 +741,9 @@ func (r *Reporter) doClose(ctx context.Context, machineID string, run *openRun, 
 	}
 	if errMsg != "" {
 		body["error"] = errMsg
+	}
+	if kind := r.snapshot(run).Kind; kind != "" {
+		body["kind"] = kind
 	}
 	if _, _, err := r.send(ctx, cfg, http.MethodPatch, "/api/machine/runs/"+runID, body); err != nil {
 		r.logDrop(machineID, "close run", err)

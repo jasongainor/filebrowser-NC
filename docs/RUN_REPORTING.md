@@ -14,7 +14,7 @@ feed and translates it into four calls:
 
 | Trigger | Call | Notes |
 |---|---|---|
-| A streaming job starts, or the daemon attaches to a program the controller is already running (SD card / USB / Ethernet drop) | `POST /api/machine/runs` | Identity (`job_readable_id`, `operation_ref`, `part_id`, `program_sha256`) comes from `ParseIdentity` of the file, when one is available — see below. `o_number` comes from the aggregator's `status_combined` (Q500) metric, independent of whether identity resolved. |
+| A streaming job starts, or the daemon attaches to a program the controller is already running (SD card / USB / Ethernet drop) | `POST /api/machine/runs` | Identity (`job_readable_id`, `operation_ref`, `part_id`, `program_sha256`, `kind`) comes from `ParseIdentity` of the file, when one is available — see below and "Run kind" below. `o_number` comes from the aggregator's `status_combined` (Q500) metric, independent of whether identity resolved. |
 | The `status_combined` metric's `PARTS` field changes | `POST /api/machine/runs/{run_id}/events` `{type: "parts"}` | Only fires when the run actually has a `run_id` (i.e. the create call already succeeded). |
 | `HaasLastError` newly appears on the streamer's status | `POST .../events` `{type: "alarm"}` | |
 | A `"log"` event at level `error` | `POST .../events` `{type: "error"}` | Also flags the run so an attach-only close (no `job_history` row to consult) reports outcome `error` instead of `unknown`. |
@@ -43,6 +43,56 @@ populated when the Reporter can get its hands on the file's bytes:
 A program with a GMW header that fails to parse, or has no header at
 all, degrades the same way — the run still opens, just without those
 fields.
+
+## Run kind — trial vs production vs rnd
+
+Jason's call on R&D/prove-out runs vs press-the-button-and-walk-away runs:
+log every run — the machine can't tell them apart, and prove-out time is
+still data worth having — but classify each one with a `kind` so Carbon
+only ever counts the time that should count as machine time:
+
+- `trial` — prove-out / first article. Carbon maps this to **setup**
+  time, not machine time.
+- `production` — a real walk-away run. Carbon maps this to **machine**
+  time.
+- `rnd` — no job at all. Stored in gmw-mes only; never reaches Carbon.
+
+**gmw-mes owns the default classification rule and the Carbon time
+mapping** — this repo has no say in either. The default (documented on
+the gmw-mes side, `docs/machine-runs.md`) is: the first run of a given
+(job, program-sha) pair is `trial`, later runs of the same pair are
+`production`; a program with no `GMW-JOB` header at all is `rnd`. This
+daemon's job is narrower — carry an explicit `kind` up to gmw-mes when
+it already knows one, and let the operator override the *current* run's
+kind when the default guess is about to be wrong (e.g. the first run of
+a job turns out to be the real walk-away production run, not a
+prove-out):
+
+- **From the post.** `cnc/program_identity.go`'s `ParseIdentity` reads an
+  optional `(GMW-KIND TRIAL|PROD|RND)` header line (see
+  `docs/PROGRAM_IDENTITY.md`) into `Identity.Kind`, normalized to
+  `cnc.RunKindTrial`/`RunKindProduction`/`RunKindRnd`. `openRunFromJob`
+  copies it onto the new run, and `POST /api/machine/runs` sends it as
+  `kind` when non-empty. An attach-opened run (no absolute path
+  available) never has a header to read, so it always opens with no
+  `kind` — same "unlinked identity is not an error" rule as
+  `job_readable_id` et al.
+- **From the operator.** `cncd`'s `POST /api/cnc/run-kind`
+  `{machine_id?, kind}` (`cncd/router_runkind.go`) calls
+  `Reporter.SetKind(machineID, kind)`, which immediately `PATCH
+  /api/machine/runs/{run_id}` `{kind}`s the open run and remembers the
+  value so the run's eventual close carries it too, even if that
+  immediate PATCH is dropped after retries. 400 for a `kind` that isn't
+  one of `trial`/`production`/`rnd`; 409 when the resolved machine has
+  no run open. `GET /api/cnc/run-kind?machine_id=` reads back the open
+  run's `kind` and `run_id` without changing anything. `GET
+  /api/cnc/state` also surfaces `run_kind`/`run_id` alongside its usual
+  metric keys, whenever a run is open, so `/machine`'s UI can render
+  the current classification without a second request.
+- **Persistence.** `kind` is part of the run marker
+  (`active_run_<machine>.json`, `cnc/reporter.go`), so an operator
+  override survives a daemon restart the same way the rest of an open
+  run's state does.
 
 ## Config
 

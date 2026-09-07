@@ -48,7 +48,41 @@ var (
 	gmwPostedRe = regexp.MustCompile(`(?i)^\(\s*GMW-POSTED\s+(\S+)\s*\)\s*$`)
 	gmwToolsRe  = regexp.MustCompile(`(?i)^\(\s*GMW-TOOLS\s+(\d+)\s*\)\s*$`)
 	gmwShaRe    = regexp.MustCompile(`(?i)^\(\s*GMW-SHA\s+([0-9A-Fa-f]+|PENDING)\s*\)\s*$`)
+	gmwKindRe   = regexp.MustCompile(`(?i)^\(\s*GMW-KIND\s+(TRIAL|PROD|RND)\s*\)\s*$`)
 )
+
+// Run-kind vocabulary — whether a run is a trial (prove-out/first
+// article), production (walk-away), or rnd (no job at all). See
+// docs/RUN_REPORTING.md for the full trial-vs-production-vs-rnd
+// rationale and who owns the default classification rule (gmw-mes,
+// not this daemon). These are the canonical, lower-case forms used
+// throughout cnc/cncd/cncapi — ParseIdentity normalizes the header's
+// TRIAL/PROD/RND tokens into them.
+const (
+	RunKindTrial      = "trial"
+	RunKindProduction = "production"
+	RunKindRnd        = "rnd"
+)
+
+// gmwKindTokens maps the header/post's short uppercase tokens to the
+// canonical RunKind* values.
+var gmwKindTokens = map[string]string{
+	"TRIAL": RunKindTrial,
+	"PROD":  RunKindProduction,
+	"RND":   RunKindRnd,
+}
+
+// ValidRunKind reports whether k is one of the canonical RunKind*
+// values. Empty is NOT valid here — callers that allow "unspecified"
+// (e.g. an absent header field) check for "" explicitly first; this
+// is for validating an explicit kind, e.g. an operator override.
+func ValidRunKind(k string) bool {
+	switch k {
+	case RunKindTrial, RunKindProduction, RunKindRnd:
+		return true
+	}
+	return false
+}
 
 // Identity is the parsed header block. Fields are best-effort — a
 // malformed individual line just leaves its field zero rather than
@@ -65,6 +99,14 @@ type Identity struct {
 	PostedAt      time.Time
 	PostedAtRaw   string
 	ToolCount     int
+
+	// Kind classifies the run this program produces: RunKindTrial
+	// (prove-out/first article), RunKindProduction (walk-away), or
+	// RunKindRnd (no job at all). Empty when the post/header didn't
+	// say — gmw-mes's own default rule then applies (first run of a
+	// job+sha is trial, later runs are production; no GMW-JOB at all
+	// is rnd). See docs/RUN_REPORTING.md.
+	Kind string
 
 	// HeaderSHA256 is what the header claims (GMW-SHA), uppercase hex.
 	HeaderSHA256 string
@@ -199,6 +241,10 @@ func parseGMWLine(id *Identity, text string) {
 		}
 		return
 	}
+	if m := gmwKindRe.FindStringSubmatch(text); m != nil {
+		id.Kind = gmwKindTokens[strings.ToUpper(m[1])]
+		return
+	}
 }
 
 // splitLinesKeepEnds splits on "\n" but keeps the terminator attached
@@ -264,17 +310,22 @@ type SidecarOperation struct {
 
 // Sidecar is the full <program>.gmw.json shape.
 type Sidecar struct {
-	SchemaVersion int                `json:"schema_version"`
-	Job           string             `json:"job"`
-	Operation     string             `json:"operation,omitempty"`
-	Part          string             `json:"part,omitempty"`
-	PostName      string             `json:"post_name,omitempty"`
-	PostVersion   string             `json:"post_version,omitempty"`
-	PostedAt      time.Time          `json:"posted_at"`
-	ToolCount     int                `json:"tool_count,omitempty"`
-	SHA256        string             `json:"sha256"`
-	Tools         []SidecarTool      `json:"tools"`
-	Operations    []SidecarOperation `json:"operations,omitempty"`
+	SchemaVersion int    `json:"schema_version"`
+	Job           string `json:"job"`
+	Operation     string `json:"operation,omitempty"`
+	Part          string `json:"part,omitempty"`
+	// Kind mirrors the header's GMW-KIND, already normalized to one
+	// of the RunKind* values — "trial", "production", "rnd", or empty
+	// when the post/operator didn't set it (gmw-mes's default rule
+	// then applies). See docs/RUN_REPORTING.md.
+	Kind        string             `json:"kind,omitempty"`
+	PostName    string             `json:"post_name,omitempty"`
+	PostVersion string             `json:"post_version,omitempty"`
+	PostedAt    time.Time          `json:"posted_at"`
+	ToolCount   int                `json:"tool_count,omitempty"`
+	SHA256      string             `json:"sha256"`
+	Tools       []SidecarTool      `json:"tools"`
+	Operations  []SidecarOperation `json:"operations,omitempty"`
 }
 
 // SidecarPath returns the sidecar path for an NC file — resolved
@@ -572,9 +623,13 @@ type IdentityReport struct {
 	Job           string `json:"job,omitempty"`
 	Operation     string `json:"operation,omitempty"`
 	Part          string `json:"part,omitempty"`
-	PostName      string `json:"post_name,omitempty"`
-	PostVersion   string `json:"post_version,omitempty"`
-	PostedAt      string `json:"posted_at,omitempty"`
+	// Kind is the normalized GMW-KIND value (RunKindTrial/
+	// RunKindProduction/RunKindRnd), empty when the header didn't
+	// carry one.
+	Kind        string `json:"kind,omitempty"`
+	PostName    string `json:"post_name,omitempty"`
+	PostVersion string `json:"post_version,omitempty"`
+	PostedAt    string `json:"posted_at,omitempty"`
 
 	HeaderSHA256   string `json:"header_sha256,omitempty"`
 	ComputedSHA256 string `json:"computed_sha256,omitempty"`
@@ -605,6 +660,7 @@ func BuildIdentityReport(absPath string, nc []byte, table *ToolTable) *IdentityR
 		Job:            id.Job,
 		Operation:      id.Operation,
 		Part:           id.Part,
+		Kind:           id.Kind,
 		PostName:       id.PostName,
 		PostVersion:    id.PostVersion,
 		HeaderSHA256:   id.HeaderSHA256,

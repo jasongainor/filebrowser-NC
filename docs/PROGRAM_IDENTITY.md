@@ -44,6 +44,7 @@ Rules (Haas-safe):
 ```
 (GMW-ID V1)
 (GMW-JOB J000020 OP10)
+(GMW-KIND PROD)
 (GMW-PART F-BRACKET-REV-C)
 (GMW-POST HAAS-NGC V1.0.3)
 (GMW-POSTED 2026-09-07T14:22:00Z)
@@ -55,11 +56,24 @@ Rules (Haas-safe):
 |---|---|---|
 | `GMW-ID` | Schema version of this header format | `V1` |
 | `GMW-JOB` | Carbon `jobReadableId`, then the operation id/seq | `J000020 OP10` |
+| `GMW-KIND` | Optional run classification — `TRIAL` (prove-out/first article), `PROD` (walk-away production), or `RND` (no job). Omitted entirely when the post property is left blank. | `PROD` |
 | `GMW-PART` | Part or item id | `F-BRACKET-REV-C` |
 | `GMW-POST` | Post name, then post version | `HAAS-NGC V1.0.3` |
 | `GMW-POSTED` | UTC timestamp, RFC 3339 | `2026-09-07T14:22:00Z` |
 | `GMW-TOOLS` | Tool count, for a fast sanity check without reading the sidecar | `3` |
 | `GMW-SHA` | sha256 (hex) of the file **body**, i.e. everything after the header block, when the post can compute it — otherwise the literal string `PENDING` | 64 hex chars, or `PENDING` |
+
+`GMW-KIND` is deliberately optional and, unlike every other field here, has no
+"degrade to empty and move on" ambiguity to worry about: gmw-mes owns the
+default classification rule (first run of a job+program-sha is a trial,
+later runs are production; a program with no `GMW-JOB` at all is rnd — see
+this repo's `docs/RUN_REPORTING.md`) and only needs the daemon to carry an
+explicit value when the post (or an operator, via the `/api/cnc/run-kind`
+override — `docs/RUN_REPORTING.md`) actually knows one. `cnc.ParseIdentity`
+normalizes the header's `TRIAL`/`PROD`/`RND` tokens to gmw-mes's own
+lower-case vocabulary (`cnc.RunKindTrial`/`RunKindProduction`/`RunKindRnd`);
+an absent or unrecognized token just leaves `Identity.Kind` empty, the same
+"malformed field, not malformed block" rule every other GMW- field gets.
 
 `GMW-SHA` is written as `PENDING` by the `.cps` snippet in §3, not a real hash — the
 post kernel's JS sandbox has no hash/crypto primitive to compute it with (verified
@@ -99,6 +113,7 @@ geometry, reach, and the per-operation list.
   "schema_version": 1,
   "job": "J000020",
   "operation": "OP10",
+  "kind": "production",
   "part": "F-BRACKET-REV-C",
   "post_name": "HAAS-NGC",
   "post_version": "1.0.3",
@@ -202,6 +217,7 @@ geometry, reach, and the per-operation list.
     "schema_version": {"type": "integer", "minimum": 1},
     "job": {"type": "string"},
     "operation": {"type": "string"},
+    "kind": {"type": "string", "enum": ["trial", "production", "rnd", ""]},
     "part": {"type": "string"},
     "post_name": {"type": "string"},
     "post_version": {"type": "string"},
@@ -291,6 +307,34 @@ properties.gmwPart = {
   title: "GMW Part/Item", description: "Part or item id",
   group: "gmw", type: "string", value: "", scope: "post"
 };
+properties.gmwKind = {
+  title: "GMW Kind",
+  description: "Run classification: trial, production, rnd, or blank to let gmw-mes decide",
+  group: "gmw", type: "string", value: "", scope: "post"
+};
+```
+
+`gmwKind` is intentionally spelled out in gmw-mes's own vocabulary (`trial`/
+`production`/`rnd`, matching `cnc.RunKindTrial`/`RunKindProduction`/
+`RunKindRnd`) rather than the header's compact `TRIAL`/`PROD`/`RND` tokens —
+that's one fewer thing for whoever's setting up a job in Fusion to have to
+remember. `gmwKindToken()` below does the one-time mapping to the header's
+Haas-safe short form; the sidecar just carries the property's value verbatim
+(already the canonical form `cnc.Sidecar.Kind` expects). Left blank by
+default: gmw-mes's own default rule (first run of a job+program-sha is a
+trial, later runs are production; no `GMW-JOB` at all is rnd) is what
+usually applies, this property is only for the cases where someone posting
+the job already knows better.
+
+```js
+function gmwKindToken(kind) {
+  switch (String(kind || "").toLowerCase()) {
+    case "trial": return "TRIAL";
+    case "production": return "PROD";
+    case "rnd": return "RND";
+    default: return ""; // blank/unrecognized -- no GMW-KIND line at all
+  }
+}
 ```
 
 Verified against the shipped post's own `properties.writeMachine` /
@@ -438,6 +482,10 @@ function onOpen() {
 
   writeComment("GMW-ID V1");
   writeComment("GMW-JOB " + properties.gmwJob + " " + properties.gmwOp);
+  var gmwKindTok = gmwKindToken(properties.gmwKind);
+  if (gmwKindTok) {
+    writeComment("GMW-KIND " + gmwKindTok);
+  }
   writeComment("GMW-PART " + properties.gmwPart);
   writeComment("GMW-POST HAAS-NGC V1.0.3");
   // Date is a documented kernel class ("JavaScript date class" per
@@ -528,6 +576,7 @@ function gmwWriteSidecar(ncPath) {
     schema_version: 1,
     job: properties.gmwJob,
     operation: properties.gmwOp,
+    kind: String(properties.gmwKind || "").toLowerCase(),
     part: properties.gmwPart,
     post_name: "HAAS-NGC",
     post_version: "1.0.3",
@@ -583,7 +632,10 @@ than listed here as open.
   line 1 isn't `(GMW-ID ...)`. Malformed individual fields degrade to zero
   values rather than invalidating the whole block. Also computes the sha256
   of the body (everything after the contiguous `GMW-` run) and reports
-  `SHAMatch`/`ComputedSHA256` against the header's `GMW-SHA`.
+  `SHAMatch`/`ComputedSHA256` against the header's `GMW-SHA`. `Identity.Kind`
+  holds the normalized `GMW-KIND` value (`RunKindTrial`/`RunKindProduction`/
+  `RunKindRnd`, package constants — see `docs/RUN_REPORTING.md`), empty when
+  the header omitted it or the token wasn't one of `TRIAL`/`PROD`/`RND`.
 - `SidecarPath(ncPath string) string` — `ncPath + ".gmw.json"`, resolved
   entirely inside `cnc/` so `http/` needs no change to support this.
 - `LoadSidecar(path string) (*Sidecar, error)` — reads + JSON-decodes; a
