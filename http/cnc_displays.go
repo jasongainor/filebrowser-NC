@@ -28,7 +28,6 @@ import (
 
 	"github.com/filebrowser/filebrowser/v2/cnc"
 	"github.com/filebrowser/filebrowser/v2/settings"
-	"github.com/filebrowser/filebrowser/v2/users"
 )
 
 // displayListItem is a Display plus the process-local liveness the
@@ -179,18 +178,14 @@ func cncDisplayFetchHandler(registry *cnc.Registry) handleFunc {
 		// the display reaching this endpoint at all is the liveness
 		// signal, independent of whether we could answer it.
 		registry.TouchDisplay(id)
-		// buildMachineToolList needs a user for FullPath resolution on the
-		// tool-table dump directory. The firmware endpoint isn't wrapped in
-		// withUser (no JWT from the e-paper), so hydrate d.user manually
-		// with the first admin we find. Tool-table dumps are written from
-		// admin-scope anyway, so this is the same scope the dashboard uses.
-		if d.user == nil {
-			if u, ferr := firstAdminUser(d); ferr == nil {
-				d.user = u
-			} else {
-				return http.StatusInternalServerError, ferr
-			}
-		}
+		// buildMachineToolList resolves the tool-table dump directory
+		// through d.pathResolver(). This handler isn't wrapped in
+		// withUser (no JWT from the e-paper), so d.user is nil here;
+		// pathResolver's fallback for that case is a resolver rooted at
+		// the server root — exactly the scope tool-table dumps are
+		// written under (see toolTableDirAbs), and exactly what an
+		// admin user's FullPath would have resolved to. No user object
+		// needs to be borrowed to reach it.
 		payload, status, err := buildMachineToolList(registry, d, disp.MachineID)
 		if err != nil {
 			return status, err
@@ -230,23 +225,6 @@ func newDisplayID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
-}
-
-// firstAdminUser returns the first user with admin perms. Used by the
-// unauthenticated firmware endpoint to populate d.user so FullPath()
-// path resolution works. Tool-table dumps are written under an admin
-// scope so this matches what's on disk.
-func firstAdminUser(d *data) (*users.User, error) {
-	all, err := d.store.Users.Gets(d.server.Root)
-	if err != nil {
-		return nil, err
-	}
-	for _, u := range all {
-		if u.Perm.Admin {
-			return u, nil
-		}
-	}
-	return nil, errors.New("no admin user configured")
 }
 
 // extractBearer pulls the token out of `Authorization: Bearer <t>`,

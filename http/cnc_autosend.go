@@ -55,7 +55,7 @@ type autoSendResponse struct {
 // surface the preflight summary either way.
 func cncAutoSendHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		if !d.user.Perm.Modify {
+		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
 		req := &cncAutoSendBody{}
@@ -93,13 +93,19 @@ func cncAutoSendHandler(registry *cnc.Registry) handleFunc {
 		if strings.Contains(clean, "..") {
 			return http.StatusBadRequest, errors.New("file_path must not escape the share")
 		}
-		absPath := d.user.FullPath(clean)
+		absPath, err := d.pathResolver().FullPath(clean)
+		if err != nil {
+			return http.StatusBadRequest, err
+		}
 
 		// Build preflight against the latest tool-table dump. Auto-send
 		// requires a fresh table — without one we can't classify tools,
 		// so we refuse rather than send blind.
 		var table *cnc.ToolTable
-		dir := toolTableDirAbs(d, machineID)
+		dir, direrr := toolTableDirAbs(d, machineID)
+		if direrr != nil {
+			return http.StatusBadRequest, direrr
+		}
 		if latestPath, _ := newestJSONIn(dir); latestPath != "" {
 			if buf, rerr := os.ReadFile(latestPath); rerr == nil {
 				var t cnc.ToolTable

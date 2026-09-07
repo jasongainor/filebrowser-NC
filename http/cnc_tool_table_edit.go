@@ -42,7 +42,7 @@ type toolTableEditBody struct {
 
 func cncToolTableEditHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		if !d.user.Perm.Modify {
+		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
 		st, machineID, code, err := resolveStreamer(registry, r)
@@ -76,7 +76,10 @@ func cncToolTableEditHandler(registry *cnc.Registry) handleFunc {
 			return http.StatusBadRequest, errors.New("nothing to apply: pass copy_from_slot or at least one numeric field")
 		}
 
-		dir := toolTableDirAbs(d, machineID)
+		dir, err := toolTableDirAbs(d, machineID)
+		if err != nil {
+			return http.StatusBadRequest, err
+		}
 		latestPath, err := newestJSONIn(dir)
 		if err != nil {
 			return http.StatusInternalServerError, err

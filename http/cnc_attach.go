@@ -38,7 +38,7 @@ type cncAttachBody struct {
 // in a junk tag.
 func cncAttachHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		if !d.user.Perm.Modify {
+		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
 		req := &cncAttachBody{}
@@ -63,7 +63,11 @@ func cncAttachHandler(registry *cnc.Registry) handleFunc {
 		// Existence check — operator might paste a stale path. The
 		// streamer doesn't otherwise care; verifying here gives a
 		// cleaner error than a silent "attached but never loads."
-		if _, err := os.Stat(d.user.FullPath(clean)); err != nil {
+		abs, err := d.pathResolver().FullPath(clean)
+		if err != nil {
+			return http.StatusBadRequest, err
+		}
+		if _, err := os.Stat(abs); err != nil {
 			return http.StatusNotFound, fmt.Errorf("file not in scope: %s", clean)
 		}
 		source := strings.ToLower(strings.TrimSpace(req.Source))
@@ -82,7 +86,7 @@ func cncAttachHandler(registry *cnc.Registry) handleFunc {
 
 func cncDetachHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		if !d.user.Perm.Modify {
+		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
 		machineID := r.URL.Query().Get("machine_id")
