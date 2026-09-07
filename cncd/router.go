@@ -55,6 +55,7 @@ func NewRouter(d Deps) http.Handler {
 	})
 
 	api := r.PathPrefix("/api").Subrouter()
+	registerLogin(api, d)
 
 	cncRouter := api.PathPrefix("/cnc").Subrouter()
 	cncRouter.HandleFunc("/state", d.stateHandler).Methods("GET")
@@ -69,6 +70,7 @@ func NewRouter(d Deps) http.Handler {
 	files.HandleFunc("", d.filesDeleteHandler(resolver)).Methods("DELETE")
 
 	registerCNC(r, d)
+	registerMCP(r, d)
 
 	return r
 }

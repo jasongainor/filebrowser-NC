@@ -33,6 +33,13 @@ import (
 // whether a line belongs to the header block at all.
 var gmwHeaderLine = regexp.MustCompile(`(?i)^\(\s*GMW-`)
 
+// preambleLine matches the lines allowed before the GMW header: the
+// tape marker, the O-number line (with or without a comment), or blank.
+var preambleLine = regexp.MustCompile(`(?i)^(%|O\d+.*|)$`)
+
+// maxPreambleLines bounds how far ParseIdentity looks for the header.
+const maxPreambleLines = 3
+
 var (
 	gmwIDRe     = regexp.MustCompile(`(?i)^\(\s*GMW-ID\s+V(\d+)\s*\)\s*$`)
 	gmwJobRe    = regexp.MustCompile(`(?i)^\(\s*GMW-JOB\s+(\S+)(?:\s+(\S+))?\s*\)\s*$`)
@@ -99,14 +106,32 @@ func ParseIdentity(nc []byte) (*Identity, bool) {
 		return nil, false
 	}
 
-	firstText := trimLineEnding(lines[0])
-	if !gmwIDRe.MatchString(strings.TrimSpace(firstText)) {
+	// A Haas file (and the stock post snippet) begins with the tape
+	// marker and the O-number line before any comment, so the header
+	// block may sit behind a short preamble of exactly those lines:
+	// "%", "O01020 (NAME)", or blank. Anything else on line 1 means
+	// no header — a stray comment does not count as a preamble.
+	start := 0
+	for start < len(lines) && start < maxPreambleLines {
+		text := strings.TrimSpace(trimLineEnding(lines[start]))
+		if gmwIDRe.MatchString(text) {
+			break
+		}
+		if !preambleLine.MatchString(text) {
+			return nil, false
+		}
+		start++
+	}
+	if start >= len(lines) || !gmwIDRe.MatchString(strings.TrimSpace(trimLineEnding(lines[start]))) {
 		return nil, false
 	}
 
 	id := &Identity{}
 	consumed := 0
-	for _, raw := range lines {
+	for _, raw := range lines[:start] {
+		consumed += len(raw)
+	}
+	for _, raw := range lines[start:] {
 		text := strings.TrimSpace(trimLineEnding(raw))
 		if !gmwHeaderLine.MatchString(text) {
 			break

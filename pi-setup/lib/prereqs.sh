@@ -30,6 +30,8 @@ ensure_node() {
 
   if (( current_major >= NODE_MAJOR_REQUIRED )); then
     ok "Node $(node -v) already installed"
+  elif [[ $DRY_RUN == 1 ]]; then
+    log "[dry-run] would install Node $NODE_MAJOR_REQUIRED via NodeSource"
   else
     log "installing Node $NODE_MAJOR_REQUIRED via NodeSource…"
     # NodeSource repo for Node 24. Their script handles arch + distro.
@@ -43,6 +45,8 @@ ensure_node() {
   if command -v corepack &>/dev/null; then
     corepack enable >/dev/null 2>&1 || true
     ok "corepack enabled (pnpm will auto-resolve from packageManager pin)"
+  elif [[ $DRY_RUN == 1 ]]; then
+    log "[dry-run] would enable corepack"
   else
     warn "corepack not found in this Node install — pnpm may not resolve"
   fi
@@ -69,8 +73,6 @@ ensure_go() {
     return 0
   fi
 
-  log "installing Go $GO_DOWNLOAD_VERSION from go.dev/dl…"
-
   local arch
   case "$(dpkg --print-architecture 2>/dev/null || uname -m)" in
     arm64|aarch64)        arch=arm64 ;;
@@ -81,6 +83,14 @@ ensure_go() {
 
   local tarball="go${GO_DOWNLOAD_VERSION}.linux-${arch}.tar.gz"
   local url="https://go.dev/dl/${tarball}"
+
+  if [[ $DRY_RUN == 1 ]]; then
+    log "[dry-run] would download $url and extract to /usr/local/go"
+    return 0
+  fi
+
+  log "installing Go $GO_DOWNLOAD_VERSION from go.dev/dl…"
+
   local tmpdir
   tmpdir=$(mktemp -d)
 
@@ -100,10 +110,18 @@ ensure_go() {
   ok "Go $(/usr/local/go/bin/go version | awk '{print $3}') installed at /usr/local/go"
 }
 
+# install_build_prereqs [SERVICE]
+# Node/pnpm are only needed to build filebrowser's Vue frontend — cncd is a
+# plain Go binary with no frontend, so a cncd-only Pi skips Node entirely.
 install_build_prereqs() {
+  local service=${1:-${SERVICE:-cncd}}
   step "Installing build prerequisites (one-time)"
   ensure_apt_basics
-  ensure_node
+  if [[ $service == filebrowser ]]; then
+    ensure_node
+  else
+    log "SERVICE=$service — skipping Node/pnpm (cncd has no frontend to build)"
+  fi
   ensure_go
   ok "all prerequisites ready"
 }
@@ -129,17 +147,42 @@ build_filebrowser() {
   # working trees and breaking later `git pull`s).
   local pnpm_install='corepack pnpm install --frozen-lockfile --silent'
   if [[ $build_user == root ]]; then
-    bash -c "$prelude; cd '$REPO_DIR/frontend' && $pnpm_install && corepack pnpm run build"
+    run bash -c "$prelude; cd '$REPO_DIR/frontend' && $pnpm_install && corepack pnpm run build"
   else
-    runuser -u "$build_user" -- bash -c "$prelude; cd '$REPO_DIR/frontend' && $pnpm_install && corepack pnpm run build"
+    run runuser -u "$build_user" -- bash -c "$prelude; cd '$REPO_DIR/frontend' && $pnpm_install && corepack pnpm run build"
   fi
   ok "frontend built"
 
   log "  backend: go build…"
   if [[ $build_user == root ]]; then
-    bash -c "$prelude; cd '$REPO_DIR' && go build -o filebrowser"
+    run bash -c "$prelude; cd '$REPO_DIR' && go build -o filebrowser"
   else
-    runuser -u "$build_user" -- bash -c "$prelude; cd '$REPO_DIR' && go build -o filebrowser"
+    run runuser -u "$build_user" -- bash -c "$prelude; cd '$REPO_DIR' && go build -o filebrowser"
   fi
   ok "backend built ($REPO_DIR/filebrowser)"
+}
+
+# ── Build the cncd binary as the invoking (non-root) user ───────────────────
+# cncd is a single Go binary with no frontend — `go build ./cmd/cncd`, full
+# stop. The caller (setup-pi.sh) installs the resulting $REPO_DIR/cncd.bin to
+# /usr/local/bin/cncd, matching where cnc-rebuild/cnc-autodeploy expect it.
+build_cncd() {
+  step "Building cncd binary"
+
+  local build_user="${SUDO_USER:-${USER}}"
+  if [[ -z $build_user || $build_user == root ]]; then
+    warn "running as root with no SUDO_USER — building as root (caches go in /root)"
+    build_user=root
+  fi
+
+  # shellcheck disable=SC2016 # literal $PATH for the bash -c subshell to expand
+  local prelude='export PATH="/usr/local/go/bin:$PATH"'
+
+  log "  go build ./cmd/cncd…"
+  if [[ $build_user == root ]]; then
+    run bash -c "$prelude; cd '$REPO_DIR' && go build -o cncd.bin ./cmd/cncd"
+  else
+    run runuser -u "$build_user" -- bash -c "$prelude; cd '$REPO_DIR' && go build -o cncd.bin ./cmd/cncd"
+  fi
+  ok "cncd built ($REPO_DIR/cncd.bin)"
 }

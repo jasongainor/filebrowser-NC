@@ -28,6 +28,7 @@ type Registry struct {
 	aggregators map[string]*Aggregator
 	queues      *QueueStore
 	notifier    *Notifier
+	reporter    *Reporter
 	library     *LibraryStore
 	bgCtx       context.Context
 	bgCancel    context.CancelFunc
@@ -64,6 +65,7 @@ func NewRegistry(s settingsReader) *Registry {
 		r.library = ls
 	}
 	r.notifier = NewNotifier(s)
+	r.reporter = NewReporter(s)
 	r.Refresh()
 	return r
 }
@@ -71,6 +73,10 @@ func NewRegistry(s settingsReader) *Registry {
 // Notifier returns the shared Discord notifier. Always non-nil; the
 // notifier itself no-ops when DiscordConfig isn't fully wired.
 func (r *Registry) Notifier() *Notifier { return r.notifier }
+
+// Reporter returns the shared gmw-mes run reporter. Always non-nil;
+// the reporter itself no-ops when Cnc.Reporting.GmwMesURL isn't set.
+func (r *Registry) Reporter() *Reporter { return r.reporter }
 
 // Queues returns the shared QueueStore. May be nil when persistence
 // failed at boot — callers should nil-check.
@@ -118,6 +124,10 @@ func (r *Registry) Refresh() {
 		if r.queues != nil {
 			go r.watchQueueAutoMatch(r.bgCtx, m.ID, st)
 		}
+		// Same pattern, next to the Discord notifier: report this
+		// machine's program runs to gmw-mes. No-op internally while
+		// Cnc.Reporting.GmwMesURL is unset. See cnc/reporter.go.
+		go r.reporter.Watch(r.bgCtx, m.ID, st)
 	}
 	// Remove orphaned.
 	for id, ag := range r.aggregators {

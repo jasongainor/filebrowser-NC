@@ -11,12 +11,17 @@
 # isn't in the default spot:
 #
 #   REPO_DIR=/srv/filebrowser-NC GO_BIN=/usr/local/go/bin/go cnc-rebuild
+#
+# SERVICE=cncd (the default) builds cmd/cncd only — no frontend, no
+# filebrowser BoltDB. SERVICE=filebrowser builds the frontend + the
+# filebrowser binary in $REPO_DIR, same as always.
 
 set -euo pipefail
 
 REPO_DIR=${REPO_DIR:-$HOME/filebrowser-NC}
 GO_BIN=${GO_BIN:-/usr/local/go/bin/go}
-SERVICE=${SERVICE:-filebrowser}
+SERVICE=${SERVICE:-cncd}
+CNCD_BIN=${CNCD_BIN:-/usr/local/bin/cncd}
 
 if [[ ! -d $REPO_DIR ]]; then
   echo "cnc-rebuild: repo not found at $REPO_DIR (set REPO_DIR=…)" >&2
@@ -28,11 +33,22 @@ cd "$REPO_DIR"
 echo "→ pulling latest…"
 git pull --ff-only
 
-echo "→ building frontend…"
-( cd frontend && corepack pnpm install --frozen-lockfile --silent && corepack pnpm run build )
+if [[ $SERVICE == cncd ]]; then
+  echo "→ building cncd…"
+  # -o cncd.bin, not "cncd" — the repo has a top-level cncd/ package
+  # directory; `go build -o cncd` would silently drop the binary inside
+  # it as cncd/cncd instead of erroring.
+  "$GO_BIN" build -o cncd.bin ./cmd/cncd
+  echo "→ installing to $CNCD_BIN…"
+  sudo install -m 0755 cncd.bin "$CNCD_BIN"
+  rm -f cncd.bin
+else
+  echo "→ building frontend…"
+  ( cd frontend && corepack pnpm install --frozen-lockfile --silent && corepack pnpm run build )
 
-echo "→ building backend…"
-"$GO_BIN" build -o filebrowser
+  echo "→ building backend…"
+  "$GO_BIN" build -o filebrowser
+fi
 
 echo "→ restarting $SERVICE…"
 sudo systemctl restart "$SERVICE"

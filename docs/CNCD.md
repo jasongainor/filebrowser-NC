@@ -40,24 +40,37 @@ poll interval:
   "displays": [
     {"id": "d1", "machineId": "m1", "name": "Shop floor e-paper"}
   ],
-  "baselinePollSeconds": 15
+  "baselinePollSeconds": 15,
+  "auth": {
+    "smbAddress": "127.0.0.1:445",
+    "domain": "",
+    "sessionTTLHours": 168
+  }
 }
 ```
+
+`auth` is additive and optional — an absent or zero-valued `auth` object
+gets cncd's own defaults (`127.0.0.1:445`, empty domain, a one-week session
+TTL). See "Sign-in" below.
 
 Anything cncd mutates (currently nothing — see below) is written back to
 this file, replacing it atomically (write to `.tmp`, rename over).
 
-## Identity: bearer token only, for now
+## Identity: machine-token bearer, or a Samba-backed session
 
-cncd has no login yet. The one thing it can check is whether a request
-presents the configured `machineToken` as `Authorization: Bearer <token>`:
+cncd's `Authz` is decided one of two independent ways:
 
-- Matching bearer → `Authz.CanModify()` and `Authz.IsAdmin()` both true.
-- No bearer, wrong bearer, or no token configured at all → read-only.
+- Presenting the configured `machineToken` as `Authorization: Bearer <token>`
+  — the m2m path (renishaw-builder, monitoring, etc).
+- Carrying a valid session cookie from `POST /api/login` — the human path,
+  described in "Sign-in" below.
+
+Either grants `Authz.CanModify()` and `Authz.IsAdmin()` both true. Neither
+present is read-only.
 
 Routes that have a session fallback in filebrowser (`/api/cnc/state`,
-`/api/cnc/qcode`, `/api/cnc/stream`) have no such fallback here, since there
-is no session concept — they require the bearer outright. Missing or wrong
+`/api/cnc/qcode`, `/api/cnc/stream`) have no such fallback here — they
+require the machine-token bearer outright, session or not. Missing or wrong
 bearer on those routes is `401`, the same status fbhttp already returns for
 a bad bearer there. `GET /api/displays/{id}` keeps its own, independent gate:
 each Display carries an optional `token` field, checked the same way
@@ -90,6 +103,59 @@ user) onto cncd's two-tier bearer: **admin** and **modify** map to
 configured machine token"); filebrowser's plain "any logged-in user" tier maps
 to **open** (no auth token needed at all — the same LAN-permissive posture as
 `GET /api/files` and `GET /api/displays/{id}` with no per-display token set).
+
+## Sign-in
+
+There is no second user store for the web UI. Samba users are the users:
+whatever password maps the share for the Haas control is the password that
+signs into cncd's UI.
+
+- On the Pi, `smbpasswd -a jason` creates (or resets) the Samba account
+  `jason` authenticates with. That's the entire "user management" story —
+  there is no cncd-side account table to keep in sync.
+- The Haas control keeps mounting the share over guest SMB1, unaffected —
+  sign-in only changes how the *web UI* authenticates, not the share mount
+  the control uses.
+- `POST /api/login` with `{"username", "password"}` validates the pair by
+  performing an SMB2 (NTLM) session setup against the local Samba server —
+  the same credential check `smbclient -U jason //127.0.0.1/share` would
+  do — and immediately logs the SMB session back off. No share is mounted
+  and no file is read; establishing the session is the authentication.
+  Success sets an `HttpOnly`, `SameSite=Lax` session cookie holding an
+  opaque random id (kept in memory only — a daemon restart invalidates
+  every session) and returns `{"username", "admin": true, "modify": true}`.
+  A single-operator box has no group/role model yet, so any authenticated
+  Samba user gets full admin+modify.
+- Failure (wrong password, unknown user, malformed body) is always `401`,
+  after a constant ~300ms delay so timing can't distinguish "no such user"
+  from "wrong password." Login is also rate-limited to 5 failures per
+  minute per remote IP.
+- `POST /api/logout` invalidates the session and clears the cookie.
+  `GET /api/me` reports the current session's identity, or `401` if there
+  is none or it's expired.
+- The Samba address (default `127.0.0.1:445`, i.e. the Pi's own `smbd`),
+  NTLM domain, and session TTL (default one week, so a shop-floor kiosk
+  doesn't demand re-login every shift) are configured under `auth` in the
+  config file — see below.
+- No password is ever logged or kept past the SMB round-trip that checks
+  it.
+
+## Routes mounted today
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/healthz` | liveness probe |
+| POST | `/api/login` | Samba-backed sign-in; sets the session cookie |
+| POST | `/api/logout` | invalidates the session, clears the cookie |
+| GET | `/api/me` | current session identity, or 401 |
+| GET | `/api/cnc/state` | baseline metric snapshot; bearer required |
+| POST | `/api/cnc/qcode` | one-shot macro-var query; bearer required — this is renishaw-builder's integration point |
+| GET | `/api/cnc/stream` | WS status/event feed; bearer required |
+| GET | `/api/displays/{id}` | firmware endpoint — the ESP32 e-paper display's integration point; per-display token gate |
+| GET | `/api/files?path=` | list a directory (or stat a file) under `--root`; open read |
+| PUT | `/api/files?path=` | upload bytes to a path under `--root`; bearer or session required |
+| DELETE | `/api/files?path=` | remove a single file under `--root`; bearer or session required, refuses directories |
+| POST/GET/DELETE | `/mcp` | MCP server (streamable HTTP) — machine state, tool table, tool reconciliation, preflight, program listing; bearer required. See `docs/MCP.md`; also reachable over stdio via `cncd mcp-stdio`. |
 
 | Method | Path | Gate | Notes |
 |---|---|---|---|
@@ -164,6 +230,17 @@ Specifically missing, deferred to later work:
   These all exist in `cnc/` and are reachable from Go — wiring them up is
   the same shape of work as this pass, just not part of the UI prototype's
   immediate needs.
+
+- **Group/role mapping for sessions.** Every signed-in Samba user is
+  currently full admin+modify (see "Sign-in" above) — there's a `TODO` in
+  `cncd/auth.go`'s `sessionAuthz` for narrowing this once more than one
+  operator matters.
+- **Admin CRUD over HTTP**: machine settings, display management, tool-table
+  edit/history/diff, the send queue, auto-send, notifications, the tool
+  library. These all exist in `cnc/` and are reachable from Go — they're not
+  wired to cncd's router yet because the right authz story (who gets to
+  reconfigure a headless daemon with no login) needs a decision, not just a
+  bearer check.
 - **Serial passthrough** beyond the existing Haas RS-232↔TCP bridge protocol
   that `cnc/link.go` already speaks.
 - **A UI.** `/api/files` and the routes above exist to give a future UI
@@ -189,3 +266,21 @@ One gotcha specific to the queue routes: `cnc.NewRegistry` always backs its
 per test — so every queue test shares one on-disk `m1.json` across runs.
 `router_cnc_test.go`'s `resetQueue` helper clears it before (and after) each
 queue-touching test.
+
+`cncd`'s own tests (`cncd/*_test.go`) build a real `*cnc.Registry` against
+an in-memory config `Store` and a temp-dir root, and drive the router with
+`httptest` — no real machine, network, or filebrowser dependency involved.
+Machines in tests are configured with an empty `Host`, which makes
+`cnc.Streamer.resolveMachine` return `ErrConfigMissing` before any dial is
+attempted, so registering a machine in a test never reaches the network.
+
+`cncd/login_test.go` covers sign-in the same way: login/logout/session-me,
+the wrong-password/rate-limit/expiry paths, and both the session and bearer
+gates on `/api/files`. None of it talks to a real Samba server — `login.go`
+defines an `Authenticator` interface the SMB implementation satisfies, and
+tests inject a fake (`fakeAuthenticator`) plus an injectable clock/sleep, so
+the constant-delay and TTL-expiry behavior is exercised without a real
+network round-trip or an actual 300ms sleep per case. The real SMB2
+round-trip against an actual Samba server is **not** exercised by this test
+suite — see the PR description for what remains to verify on real Pi
+hardware.

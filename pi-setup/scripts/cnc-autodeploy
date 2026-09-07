@@ -17,10 +17,17 @@ set -euo pipefail
 REPO_DIR=${REPO_DIR:-/home/admin/filebrowser-NC}
 RUN_USER=${RUN_USER:-admin}
 GO_BIN=${GO_BIN:-/usr/local/go/bin/go}
-SERVICE=${SERVICE:-filebrowser}
+SERVICE=${SERVICE:-cncd}
+CNCD_BIN=${CNCD_BIN:-/usr/local/bin/cncd}
 BRANCH=${BRANCH:-master}
-HEALTH_URL=${HEALTH_URL:-http://127.0.0.1:8080/health}
 HEALTH_RETRIES=${HEALTH_RETRIES:-10}
+# cncd's liveness probe is /healthz; filebrowser's is /health. Only
+# defaulted here — an explicit HEALTH_URL in the environment always wins.
+if [[ $SERVICE == cncd ]]; then
+  HEALTH_URL=${HEALTH_URL:-http://127.0.0.1:8080/healthz}
+else
+  HEALTH_URL=${HEALTH_URL:-http://127.0.0.1:8080/health}
+fi
 
 log() { echo "cnc-autodeploy: $*"; }
 die() { echo "cnc-autodeploy: $*" >&2; exit 1; }
@@ -85,12 +92,14 @@ log "$BRANCH moved ${local_sha:0:8} -> ${remote_sha:0:8}, deploying"
 
 # Whether the frontend needs rebuilding is worth checking rather than
 # assuming: pnpm install + vite build is minutes on a Pi and most backend
-# changes do not touch it at all.
-if as_user git diff --quiet "$local_sha" "$remote_sha" -- frontend/; then
-  rebuild_frontend=0
-  log "frontend unchanged — skipping the pnpm build"
-else
+# changes do not touch it at all. cncd has no frontend at all — never
+# rebuilds it regardless of what moved.
+rebuild_frontend=0
+if [[ $SERVICE != cncd ]] && ! as_user git diff --quiet "$local_sha" "$remote_sha" -- frontend/; then
   rebuild_frontend=1
+fi
+if [[ $SERVICE != cncd && $rebuild_frontend == 0 ]]; then
+  log "frontend unchanged — skipping the pnpm build"
 fi
 
 as_user git merge --ff-only "origin/$BRANCH"
@@ -100,22 +109,35 @@ as_user git merge --ff-only "origin/$BRANCH"
 # Everything builds to a side path first. A compile error must not be able
 # to leave the shop floor without a file server.
 
-if [[ $rebuild_frontend == 1 ]]; then
-  log "building frontend"
-  as_user env -C "$REPO_DIR/frontend" corepack pnpm install --frozen-lockfile --silent
-  as_user env -C "$REPO_DIR/frontend" corepack pnpm run build
-fi
+if [[ $SERVICE == cncd ]]; then
+  log "building cncd"
+  as_user "$GO_BIN" build -o cncd.new ./cmd/cncd
+else
+  if [[ $rebuild_frontend == 1 ]]; then
+    log "building frontend"
+    as_user env -C "$REPO_DIR/frontend" corepack pnpm install --frozen-lockfile --silent
+    as_user env -C "$REPO_DIR/frontend" corepack pnpm run build
+  fi
 
-log "building backend"
-as_user "$GO_BIN" build -o filebrowser.new .
+  log "building backend"
+  as_user "$GO_BIN" build -o filebrowser.new .
+fi
 
 # --- swap and restart -----------------------------------------------------
 #
 # mv over a running executable is fine — rename swaps the directory entry
 # and leaves the running inode alone. Writing in place would hit ETXTBSY.
+# cncd's binary lives at $CNCD_BIN (/usr/local/bin by default), not in the
+# checkout, so its swap installs there instead of renaming in $REPO_DIR.
 
-cp -a filebrowser filebrowser.prev
-mv filebrowser.new filebrowser
+if [[ $SERVICE == cncd ]]; then
+  cp -a "$CNCD_BIN" "${CNCD_BIN}.prev" 2>/dev/null || true
+  install -m 0755 cncd.new "$CNCD_BIN"
+  rm -f cncd.new
+else
+  cp -a filebrowser filebrowser.prev
+  mv filebrowser.new filebrowser
+fi
 systemctl restart "$SERVICE"
 
 # --- prove it actually serves, and undo it if not -------------------------
@@ -135,7 +157,11 @@ if [[ $healthy == 1 ]]; then
 fi
 
 log "new binary failed its health check — rolling back"
-mv filebrowser.prev filebrowser
+if [[ $SERVICE == cncd ]]; then
+  install -m 0755 "${CNCD_BIN}.prev" "$CNCD_BIN"
+else
+  mv filebrowser.prev filebrowser
+fi
 systemctl restart "$SERVICE"
 
 for _ in $(seq "$HEALTH_RETRIES"); do
