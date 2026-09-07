@@ -47,7 +47,7 @@ type cncQueueAddBody struct {
 // operator with read access to the share.
 func cncQueueAddHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		if !d.user.Perm.Modify {
+		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
 		req := &cncQueueAddBody{}
@@ -69,7 +69,10 @@ func cncQueueAddHandler(registry *cnc.Registry) handleFunc {
 		if strings.Contains(clean, "..") {
 			return http.StatusBadRequest, errors.New("file_path must not escape the share")
 		}
-		absPath := d.user.FullPath(clean)
+		absPath, err := d.pathResolver().FullPath(clean)
+		if err != nil {
+			return http.StatusBadRequest, err
+		}
 		qs := registry.Queues()
 		if qs == nil {
 			return http.StatusServiceUnavailable, errors.New("queue persistence unavailable")
@@ -89,7 +92,7 @@ func cncQueueAddHandler(registry *cnc.Registry) handleFunc {
 // cncQueueRemoveHandler — DELETE /api/cnc/queue/{id}
 func cncQueueRemoveHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		if !d.user.Perm.Modify {
+		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
 		_, machineID, code, err := resolveStreamer(registry, r)
@@ -121,7 +124,7 @@ type cncQueueReorderBody struct {
 // cncQueueReorderHandler — PATCH /api/cnc/queue
 func cncQueueReorderHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		if !d.user.Perm.Modify {
+		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
 		_, machineID, code, err := resolveStreamer(registry, r)
