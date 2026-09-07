@@ -64,7 +64,10 @@ func buildMachineToolList(registry *cnc.Registry, d *data, machineID string) (*c
 	// Latest table — may be nil for a fresh install. ReadJobHistory's
 	// "missing file is not an error" semantics apply here too.
 	var tbl *cnc.ToolTable
-	dir := toolTableDirAbs(d, m.ID)
+	dir, err := toolTableDirAbs(d, m.ID)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
 	if latestPath, _ := newestJSONIn(dir); latestPath != "" {
 		if buf, err := os.ReadFile(latestPath); err == nil {
 			var t cnc.ToolTable

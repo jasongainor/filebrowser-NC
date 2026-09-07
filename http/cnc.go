@@ -580,7 +580,10 @@ func cncToolTableLatestHandler(registry *cnc.Registry) handleFunc {
 		if err != nil {
 			return code, err
 		}
-		dir := toolTableDirAbs(d, machineID)
+		dir, err := toolTableDirAbs(d, machineID)
+		if err != nil {
+			return http.StatusBadRequest, err
+		}
 		latest, err := newestJSONIn(dir)
 		if err != nil {
 			return http.StatusInternalServerError, err
@@ -620,7 +623,10 @@ func cncToolTableHistoryHandler(registry *cnc.Registry) handleFunc {
 		if err != nil {
 			return code, err
 		}
-		dir := toolTableDirAbs(d, machineID)
+		dir, err := toolTableDirAbs(d, machineID)
+		if err != nil {
+			return http.StatusBadRequest, err
+		}
 		shareRel := path.Join(toolTableShareDir, sanitizeMachineID(machineID))
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -680,7 +686,7 @@ func cncToolTableHistoryHandler(registry *cnc.Registry) handleFunc {
 // no streamer interaction. Single query param: file_path.
 func cncChaptersHandler() handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		if !d.user.Perm.Modify {
+		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
 		filePath := r.URL.Query().Get("file_path")
@@ -691,7 +697,10 @@ func cncChaptersHandler() handleFunc {
 		if strings.Contains(clean, "..") {
 			return http.StatusBadRequest, errors.New("file_path must not escape the share")
 		}
-		absPath := d.user.FullPath(clean)
+		absPath, err := d.pathResolver().FullPath(clean)
+		if err != nil {
+			return http.StatusBadRequest, err
+		}
 		list, err := cnc.BuildChapters(absPath, clean)
 		if err != nil {
 			return http.StatusInternalServerError, err
@@ -719,7 +728,10 @@ func cncToolTableDiffHandler(registry *cnc.Registry) handleFunc {
 		if err != nil {
 			return code, err
 		}
-		dir := toolTableDirAbs(d, machineID)
+		dir, derr := toolTableDirAbs(d, machineID)
+		if derr != nil {
+			return http.StatusBadRequest, derr
+		}
 		entries, derr := os.ReadDir(dir)
 		if derr != nil {
 			if os.IsNotExist(derr) {
@@ -803,7 +815,10 @@ func readToolTableDump(dir, name string) (*cnc.ToolTable, error) {
 // on first write so an operator who never runs a read sees no clutter
 // in their browser.
 func persistToolTable(d *data, machineID string, tbl *cnc.ToolTable) error {
-	dir := toolTableDirAbs(d, machineID)
+	dir, err := toolTableDirAbs(d, machineID)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir tool-table dir: %w", err)
 	}
@@ -824,9 +839,9 @@ func persistToolTable(d *data, machineID string, tbl *cnc.ToolTable) error {
 	return os.Rename(tmp, full)
 }
 
-func toolTableDirAbs(d *data, machineID string) string {
+func toolTableDirAbs(d *data, machineID string) (string, error) {
 	rel := path.Join(toolTableShareDir, sanitizeMachineID(machineID))
-	return d.user.FullPath(rel)
+	return d.pathResolver().FullPath(rel)
 }
 
 // sanitizeMachineID strips path separators and traversal chars from the
@@ -911,7 +926,7 @@ type cncStartBody struct {
 
 func cncStartHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		if !d.user.Perm.Modify {
+		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
 		req := &cncStartBody{}
@@ -939,7 +954,10 @@ func cncStartHandler(registry *cnc.Registry) handleFunc {
 		if strings.Contains(clean, "..") {
 			return http.StatusBadRequest, errors.New("file_path must not escape the share")
 		}
-		absPath := d.user.FullPath(clean)
+		absPath, err := d.pathResolver().FullPath(clean)
+		if err != nil {
+			return http.StatusBadRequest, err
+		}
 
 		// Hard-block preflight gate. When the machine has
 		// RequirePreflight=true in settings, refuse the send if any
@@ -950,7 +968,10 @@ func cncStartHandler(registry *cnc.Registry) handleFunc {
 		machineCfg := findMachine(d.settings, machineID)
 		if machineCfg != nil && machineCfg.RequirePreflight {
 			var table *cnc.ToolTable
-			dir := toolTableDirAbs(d, machineID)
+			dir, direrr := toolTableDirAbs(d, machineID)
+			if direrr != nil {
+				return http.StatusBadRequest, direrr
+			}
 			if latestPath, _ := newestJSONIn(dir); latestPath != "" {
 				if buf, rerr := os.ReadFile(latestPath); rerr == nil {
 					var t cnc.ToolTable
@@ -1025,7 +1046,7 @@ func cncStartHandler(registry *cnc.Registry) handleFunc {
 // SendWizard renders before the operator hits Send.
 func cncPreflightHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		if !d.user.Perm.Modify {
+		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
 		filePath := r.URL.Query().Get("file_path")
@@ -1036,7 +1057,10 @@ func cncPreflightHandler(registry *cnc.Registry) handleFunc {
 		if strings.Contains(clean, "..") {
 			return http.StatusBadRequest, errors.New("file_path must not escape the share")
 		}
-		absPath := d.user.FullPath(clean)
+		absPath, err := d.pathResolver().FullPath(clean)
+		if err != nil {
+			return http.StatusBadRequest, err
+		}
 
 		_, machineID, code, err := resolveStreamer(registry, r)
 		if err != nil {
@@ -1046,7 +1070,10 @@ func cncPreflightHandler(registry *cnc.Registry) handleFunc {
 		// Load the latest persisted tool-table dump for this machine.
 		// nil == no dump yet → BuildPreflight returns "missing" rows.
 		var table *cnc.ToolTable
-		dir := toolTableDirAbs(d, machineID)
+		dir, direrr := toolTableDirAbs(d, machineID)
+		if direrr != nil {
+			return http.StatusBadRequest, direrr
+		}
 		latestPath, _ := newestJSONIn(dir)
 		if latestPath != "" {
 			if buf, err := os.ReadFile(latestPath); err == nil {
@@ -1113,7 +1140,7 @@ func currentSpindleTool(registry *cnc.Registry, machineID string) *int {
 
 func cncStopHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		if !d.user.Perm.Modify {
+		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
 		st, machineID, code, err := resolveStreamer(registry, r)
@@ -1161,7 +1188,7 @@ func cncStateHandler(registry *cnc.Registry) handleFunc {
 
 func cncRecoveryAckHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		if !d.user.Perm.Modify {
+		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
 		st, _, code, err := resolveStreamer(registry, r)
