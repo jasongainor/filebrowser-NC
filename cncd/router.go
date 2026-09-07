@@ -69,6 +69,8 @@ func NewRouter(d Deps) http.Handler {
 	files.HandleFunc("", d.filesUploadHandler(resolver)).Methods("PUT")
 	files.HandleFunc("", d.filesDeleteHandler(resolver)).Methods("DELETE")
 
+	registerMCP(r, d)
+
 	return r
 }
 

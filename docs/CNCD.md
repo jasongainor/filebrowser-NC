@@ -127,6 +127,7 @@ signs into cncd's UI.
 | GET | `/api/files?path=` | list a directory (or stat a file) under `--root`; open read |
 | PUT | `/api/files?path=` | upload bytes to a path under `--root`; bearer or session required |
 | DELETE | `/api/files?path=` | remove a single file under `--root`; bearer or session required, refuses directories |
+| POST/GET/DELETE | `/mcp` | MCP server (streamable HTTP) — machine state, tool table, tool reconciliation, preflight, program listing; bearer required. See `docs/MCP.md`; also reachable over stdio via `cncd mcp-stdio`. |
 
 Every path under `/api/files` and every path resolved for `/api/displays/{id}`
 goes through `cncapi.RootResolver`, jailed to `--root`: a `..` (or any
