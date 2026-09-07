@@ -80,6 +80,12 @@ type Preflight struct {
 	// SpindleSwap is true when both numbers are known and they differ.
 	// Pre-computed so the wizard doesn't have to re-derive.
 	SpindleSwap bool `json:"spindle_swap,omitempty"`
+	// Identity is populated only when the NC file carries a GMW
+	// program-identity header (see cnc/program_identity.go and
+	// docs/PROGRAM_IDENTITY.md). nil for an un-annotated program —
+	// every other field on Preflight behaves exactly as it always
+	// has in that case.
+	Identity *IdentityReport `json:"identity,omitempty"`
 }
 
 // DiameterTolerance is how far an effective_diameter may drift from
@@ -264,6 +270,15 @@ func BuildPreflight(
 	if startingTool != nil && currentSpindleTool != nil &&
 		*startingTool != *currentSpindleTool {
 		pf.SpindleSwap = true
+	}
+
+	// Identity-aware check: only fires when the file carries a GMW
+	// header (BuildIdentityReport returns nil otherwise), so an
+	// un-annotated program's report is unaffected. Best-effort — a
+	// re-read failure here just means no identity section, not a
+	// preflight error.
+	if raw, rerr := os.ReadFile(absPath); rerr == nil {
+		pf.Identity = BuildIdentityReport(absPath, raw, table)
 	}
 
 	if table == nil {
