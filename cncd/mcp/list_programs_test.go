@@ -66,8 +66,15 @@ func TestListPrograms_HappyPath(t *testing.T) {
 		t.Errorf("SHAStatus = %q, want %q (GMW-SHA PENDING)", identified.SHAStatus, cnc.SHAUnstamped)
 	}
 
-	if _, ok := byPath["jobs/nested.nc"]; !ok {
+	nested, ok := byPath["jobs/nested.nc"]
+	if !ok {
 		t.Errorf("expected jobs/nested.nc to be listed recursively")
+	}
+	if nested.JobFolder != "jobs" {
+		t.Errorf("jobs/nested.nc JobFolder = %q, want %q", nested.JobFolder, "jobs")
+	}
+	if plain.JobFolder != "" {
+		t.Errorf("plain.nc (loose at root) JobFolder = %q, want empty", plain.JobFolder)
 	}
 }
 
@@ -76,5 +83,47 @@ func TestListPrograms_UnknownPath(t *testing.T) {
 	res := callTool(t, listProgramsHandler(d), map[string]any{"path": "/does-not-exist"})
 	if !res.IsError {
 		t.Fatalf("expected an error result for a nonexistent path, got %+v", res)
+	}
+}
+
+func TestListPrograms_FilterByJob(t *testing.T) {
+	d := newTestDeps(t, nil)
+	if err := os.MkdirAll(filepath.Join(d.Root, "J000020 - F-BRACKET-REV-C"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeTestNC(t, d.Root, "J000020 - F-BRACKET-REV-C/op10.nc", identityNC)
+	writeTestNC(t, d.Root, "unrelated.nc", testNC)
+	// A file sitting in a job folder but with no header of its own —
+	// still matches the filter by folder name, not by header.
+	writeTestNC(t, d.Root, "J000020 - F-BRACKET-REV-C/readme.nc", testNC)
+
+	// Filter by folder name.
+	res := callTool(t, listProgramsHandler(d), map[string]any{"job": "J000020 - F-BRACKET-REV-C"})
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %+v", res)
+	}
+	result := structuredOf(t, res).(ListProgramsResult)
+	if len(result.Programs) != 2 {
+		t.Fatalf("filter by folder name: got %d programs, want 2: %+v", len(result.Programs), result.Programs)
+	}
+
+	// Filter by the parsed GMW-JOB id, case-insensitively.
+	res = callTool(t, listProgramsHandler(d), map[string]any{"job": "j000020"})
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %+v", res)
+	}
+	result = structuredOf(t, res).(ListProgramsResult)
+	if len(result.Programs) != 1 || result.Programs[0].Path != "J000020 - F-BRACKET-REV-C/op10.nc" {
+		t.Fatalf("filter by job id: got %+v, want just op10.nc (the identified one)", result.Programs)
+	}
+
+	// A filter that matches nothing returns an empty (not nil-error) list.
+	res = callTool(t, listProgramsHandler(d), map[string]any{"job": "NOPE"})
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %+v", res)
+	}
+	result = structuredOf(t, res).(ListProgramsResult)
+	if len(result.Programs) != 0 {
+		t.Fatalf("filter with no match: got %+v, want empty", result.Programs)
 	}
 }
