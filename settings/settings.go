@@ -66,10 +66,90 @@ type Cnc struct {
 	// 0 uses cnc.defaultBaselineInterval (15s).
 	BaselinePollSeconds int `json:"baselinePollSeconds,omitempty"`
 
+	// Reporting sends program-run lifecycle data (open / parts / alarm /
+	// close) to gmw-mes so machine time reaches Carbon. See
+	// cnc/reporter.go and docs/RUN_REPORTING.md. Off (fully a no-op)
+	// while GmwMesURL is empty — an existing install picks this up as
+	// dormant config, nothing changes until an admin fills it in.
+	Reporting ReportingConfig `json:"reporting,omitempty"`
+
+	// Auth configures cncd's web sign-in, which validates against the
+	// local Samba server instead of a second user store — see
+	// docs/CNCD.md, "Sign-in". Additive: zero-valued is a legal config
+	// (cncd fills in its own defaults for an unset SMBAddress/TTL).
+	Auth AuthConfig `json:"auth,omitempty"`
+
 	// ── Legacy fields (deprecated; migrated into Machines[0]) ──
 	HaasHost  string `json:"haasHost,omitempty"`
 	HaasPort  int    `json:"haasPort,omitempty"`
 	CameraURL string `json:"cameraUrl,omitempty"`
+}
+
+// DefaultReportingTokenEnv is the environment variable Reporter reads
+// the gmw-mes bot token from when ReportingConfig.TokenEnv is unset.
+const DefaultReportingTokenEnv = "GMW_MES_BOT_TOKEN"
+
+// ReportingConfig points cnc.Reporter at gmw-mes's machine-runs API
+// (docs/machine-runs.md in the gmw-mes repo). Deliberately does NOT
+// carry the bot token itself — only the NAME of the environment
+// variable holding it, so the token value never round-trips through
+// settings.json, the admin UI, a settings.Save() write, or a log line.
+// Reporter reads os.Getenv(TokenEnvName()) at send time, every time.
+type ReportingConfig struct {
+	// GmwMesURL is the base URL of the gmw-mes instance, e.g.
+	// "http://127.0.0.1:5401". Empty disables reporting entirely —
+	// Reporter no-ops on every hook when this is unset.
+	GmwMesURL string `json:"gmwMesUrl,omitempty"`
+	// TokenEnv is the name of the environment variable holding the
+	// X-Bot-Token bearer. Defaults to DefaultReportingTokenEnv.
+	TokenEnv string `json:"tokenEnv,omitempty"`
+	// MachineIDs optionally maps this install's own Machine.ID values
+	// to the machine id gmw-mes should see. A machine absent from
+	// this map reports its own registry ID verbatim.
+	MachineIDs map[string]string `json:"machineIds,omitempty"`
+}
+
+// Enabled reports whether reporting is wired up enough to fire.
+func (r ReportingConfig) Enabled() bool {
+	return strings.TrimSpace(r.GmwMesURL) != ""
+}
+
+// TokenEnvName returns the configured env var name, or
+// DefaultReportingTokenEnv when unset.
+func (r ReportingConfig) TokenEnvName() string {
+	if r.TokenEnv != "" {
+		return r.TokenEnv
+	}
+	return DefaultReportingTokenEnv
+}
+
+// GmwMesMachineID maps a registry machine id to the id gmw-mes should
+// see, via MachineIDs when present, otherwise the id unchanged.
+func (r ReportingConfig) GmwMesMachineID(registryID string) string {
+	if v, ok := r.MachineIDs[registryID]; ok && v != "" {
+		return v
+	}
+	return registryID
+}
+
+// AuthConfig configures how cncd's web UI validates a sign-in. There
+// is no second user store: the password that authenticates against
+// the Samba share is the password for the UI, checked with an SMB2
+// session setup against the local Samba server. See docs/CNCD.md.
+type AuthConfig struct {
+	// SMBAddress is the host:port of the Samba server sign-in
+	// validates against. Empty defaults to "127.0.0.1:445" — the
+	// Pi's own smbd, which is the only configuration cncd targets.
+	SMBAddress string `json:"smbAddress,omitempty"`
+	// Domain is the NTLM domain/workgroup to authenticate against.
+	// Empty is correct for a standalone (non-domain-joined) Samba
+	// server.
+	Domain string `json:"domain,omitempty"`
+	// SessionTTLHours is how long an issued session cookie stays
+	// valid before the UI must sign in again. 0 defaults to 24*7 (one
+	// week) — a shop-floor kiosk shouldn't demand re-login every
+	// shift change.
+	SessionTTLHours int `json:"sessionTTLHours,omitempty"`
 }
 
 // Display is one physical surface (typically a reTerminal E1001
