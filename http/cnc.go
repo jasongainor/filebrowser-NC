@@ -152,8 +152,12 @@ func normalizeMachines(in []settings.Machine, existing []settings.Machine) ([]se
 		if strings.TrimSpace(m.Name) == "" {
 			return nil, fmt.Errorf("machine %d: name required", i)
 		}
-		if strings.TrimSpace(m.Host) == "" {
-			return nil, fmt.Errorf("machine %d (%s): host required", i, m.Name)
+		// A machine is reached either over TCP (Host:Port, the Waveshare
+		// bridge) or over a direct serial device (cnc/serial_transport.go,
+		// PR #140). One of the two is required; both may be set, and
+		// Serial.Device wins at dial time.
+		if strings.TrimSpace(m.Host) == "" && strings.TrimSpace(m.Serial.Device) == "" {
+			return nil, fmt.Errorf("machine %d (%s): host or serial.device required", i, m.Name)
 		}
 		if m.Port <= 0 {
 			m.Port = settings.DefaultHaasPort
