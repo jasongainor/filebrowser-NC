@@ -86,6 +86,7 @@ func TestStore_UpdateErrorDoesNotPersist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	minted := store.Snapshot().MachineToken // first boot mints one
 	sentinel := os.ErrInvalid
 	err = store.Update(func(c *settings.Cnc) error {
 		c.MachineToken = "should-not-persist"
@@ -94,12 +95,34 @@ func TestStore_UpdateErrorDoesNotPersist(t *testing.T) {
 	if err != sentinel {
 		t.Fatalf("Update err = %v, want sentinel", err)
 	}
+	if store.Snapshot().MachineToken != minted {
+		t.Fatalf("a failed Update must not leave the in-memory config mutated")
+	}
 
 	reloaded, err := LoadStore(path)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if reloaded.Snapshot().MachineToken != "" {
+	if reloaded.Snapshot().MachineToken != minted {
 		t.Fatalf("expected on-disk file to be untouched by a failed Update")
+	}
+}
+
+func TestLoadStoreMintsMachineTokenOnFirstBoot(t *testing.T) {
+	path := t.TempDir() + "/config.json"
+	s, err := LoadStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := s.Snapshot().MachineToken
+	if len(tok) < 40 {
+		t.Fatalf("expected a minted token, got %q", tok)
+	}
+	again, err := LoadStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Snapshot().MachineToken != tok {
+		t.Fatal("token must persist across loads, not be re-minted")
 	}
 }
