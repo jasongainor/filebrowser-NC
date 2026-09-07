@@ -8,83 +8,48 @@ package fbhttp
 //
 // Mutations broadcast a "queue" event on the per-machine WS stream so
 // every connected client refreshes without polling.
+//
+// The actual logic is shared with cncd (cncd/router_cnc.go) via
+// cncapi.Deps' Queue* methods — every handler here is a thin wrapper
+// translating this package's request/response conventions
+// (withUser/withAdmin, renderJSON, mux path vars) onto that shared
+// core so behavior is unchanged.
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
-	"path"
 	"strings"
 
 	"github.com/filebrowser/filebrowser/v2/cnc"
+	"github.com/filebrowser/filebrowser/v2/cncapi"
 )
 
 // cncQueueListHandler — GET /api/cnc/queue?machine_id=
 func cncQueueListHandler(registry *cnc.Registry) handleFunc {
-	return withUser(func(w http.ResponseWriter, r *http.Request, _ *data) (int, error) {
-		_, machineID, code, err := resolveStreamer(registry, r)
+	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
+		cd := d.cncapiDeps(registry)
+		_, machineID, code, err := cd.ResolveStreamer(r.URL.Query().Get("machine_id"))
 		if err != nil {
 			return code, err
 		}
-		qs := registry.Queues()
-		if qs == nil {
-			return renderJSON(w, r, []cnc.QueueItem{})
-		}
-		return renderJSON(w, r, qs.List(machineID))
+		return renderJSON(w, r, cd.QueueList(machineID))
 	})
 }
 
-type cncQueueAddBody struct {
-	FilePath  string `json:"file_path"`
-	MachineID string `json:"machine_id,omitempty"`
-}
-
 // cncQueueAddHandler — POST /api/cnc/queue. Adds a file to the queue.
-// Resolves the file in the calling operator's scope to read its
-// O-number + size at enqueue time. The on-disk queue stores only the
-// scope-relative path; resolving again at send time works for any
-// operator with read access to the share.
 func cncQueueAddHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
 		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
-		req := &cncQueueAddBody{}
+		req := &cncapi.QueueAddRequest{}
 		if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 			return http.StatusBadRequest, err
 		}
-		if req.FilePath == "" {
-			return http.StatusBadRequest, errors.New("file_path required")
-		}
-		machineID := req.MachineID
-		if machineID == "" {
-			machineID = r.URL.Query().Get("machine_id")
-		}
-		streamer, _ := registry.Streamer(machineID)
-		if streamer == nil {
-			return http.StatusNotFound, fmt.Errorf("no machine configured (id=%q)", machineID)
-		}
-		clean := path.Clean(ensureLeading(req.FilePath))
-		if strings.Contains(clean, "..") {
-			return http.StatusBadRequest, errors.New("file_path must not escape the share")
-		}
-		absPath, err := d.pathResolver().FullPath(clean)
+		item, code, err := d.cncapiDeps(registry).QueueAdd(*req, r.URL.Query().Get("machine_id"))
 		if err != nil {
-			return http.StatusBadRequest, err
+			return code, err
 		}
-		qs := registry.Queues()
-		if qs == nil {
-			return http.StatusServiceUnavailable, errors.New("queue persistence unavailable")
-		}
-		// Resolve canonical machineID — Streamer() handles the
-		// default-when-empty case, but qs.Add wants the resolved id.
-		_, resolvedID, _, _ := resolveStreamer(registry, r)
-		item, err := qs.Add(resolvedID, cnc.QueueItem{FilePath: clean}, absPath)
-		if err != nil {
-			return errToStatus(err), err
-		}
-		streamer.EmitQueueSnapshot(qs.List(resolvedID))
 		return renderJSON(w, r, item)
 	})
 }
@@ -95,30 +60,18 @@ func cncQueueRemoveHandler(registry *cnc.Registry) handleFunc {
 		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
-		_, machineID, code, err := resolveStreamer(registry, r)
+		cd := d.cncapiDeps(registry)
+		_, machineID, code, err := cd.ResolveStreamer(r.URL.Query().Get("machine_id"))
 		if err != nil {
 			return code, err
 		}
 		id := strings.TrimPrefix(r.URL.Path, "/api/cnc/queue/")
-		if id == "" {
-			return http.StatusBadRequest, errors.New("queue item id required")
-		}
-		qs := registry.Queues()
-		if qs == nil {
-			return http.StatusServiceUnavailable, errors.New("queue persistence unavailable")
-		}
-		if err := qs.Remove(machineID, id); err != nil {
-			return errToStatus(err), err
-		}
-		if streamer, _ := registry.Streamer(machineID); streamer != nil {
-			streamer.EmitQueueSnapshot(qs.List(machineID))
+		code, err = cd.QueueRemove(machineID, id)
+		if err != nil {
+			return code, err
 		}
 		return renderJSON(w, r, map[string]bool{"removed": true})
 	})
-}
-
-type cncQueueReorderBody struct {
-	IDs []string `json:"ids"`
 }
 
 // cncQueueReorderHandler — PATCH /api/cnc/queue
@@ -127,24 +80,21 @@ func cncQueueReorderHandler(registry *cnc.Registry) handleFunc {
 		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
-		_, machineID, code, err := resolveStreamer(registry, r)
+		cd := d.cncapiDeps(registry)
+		_, machineID, code, err := cd.ResolveStreamer(r.URL.Query().Get("machine_id"))
 		if err != nil {
 			return code, err
 		}
-		req := &cncQueueReorderBody{}
-		if err := json.NewDecoder(r.Body).Decode(req); err != nil {
+		req := struct {
+			IDs []string `json:"ids"`
+		}{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			return http.StatusBadRequest, err
 		}
-		qs := registry.Queues()
-		if qs == nil {
-			return http.StatusServiceUnavailable, errors.New("queue persistence unavailable")
+		list, code, err := cd.QueueReorder(machineID, req.IDs)
+		if err != nil {
+			return code, err
 		}
-		if err := qs.Reorder(machineID, req.IDs); err != nil {
-			return errToStatus(err), err
-		}
-		if streamer, _ := registry.Streamer(machineID); streamer != nil {
-			streamer.EmitQueueSnapshot(qs.List(machineID))
-		}
-		return renderJSON(w, r, qs.List(machineID))
+		return renderJSON(w, r, list)
 	})
 }

@@ -14,121 +14,75 @@ package fbhttp
 // When the Display has a Token set the request must carry it; without
 // a token the read is LAN-permissive (shop networks are isolated and
 // adding TLS / auth to an ESP32 device would price out the use case).
+//
+// CRUD logic lives in cncapi.Deps.Displays*, shared with cncd
+// (cncd/router_cnc.go); this file is a thin wrapper. The firmware
+// fetch handler shares its tool-list build (cncapi.Deps.BuildMachineToolList)
+// with cncd/display.go but keeps its own token-gate/response glue —
+// that plumbing differs per host (no *users.User on cncd) rather than
+// being duplicated logic.
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gorilla/mux"
 
 	"github.com/filebrowser/filebrowser/v2/cnc"
+	"github.com/filebrowser/filebrowser/v2/cncapi"
 	"github.com/filebrowser/filebrowser/v2/settings"
 )
-
-// displayListItem is a Display plus the process-local liveness the
-// admin UI needs to render "last seen" / stale. See
-// cnc.Registry.TouchDisplay for why LastSeen isn't part of the
-// persisted settings.Display.
-type displayListItem struct {
-	settings.Display
-	LastSeen *time.Time `json:"lastSeen,omitempty"`
-}
 
 // cncDisplaysListHandler returns the configured displays (admin only).
 // Tokens are passed through verbatim — the admin UI surfaces them so
 // the operator can flash them onto the SD card.
 func cncDisplaysListHandler(registry *cnc.Registry) handleFunc {
 	return withAdmin(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		disps := d.settings.Cnc.Displays
-		out := make([]displayListItem, 0, len(disps))
-		for _, disp := range disps {
-			item := displayListItem{Display: disp}
-			if seen, ok := registry.DisplayLastSeen(disp.ID); ok {
-				t := seen
-				item.LastSeen = &t
-			}
-			out = append(out, item)
-		}
+		out := d.cncapiDeps(registry).DisplaysList()
 		return renderJSON(w, r, map[string]any{"displays": out})
 	})
 }
 
-type displayUpsertBody struct {
-	// On create, ID is generated; on update, the URL param wins.
-	settings.Display
-}
-
+// cncDisplaysCreateHandler, like the original, has no *cnc.Registry in
+// scope (it isn't threaded through this route's constructor) — passing
+// nil into cncapiDeps is safe because DisplaysCreate/Update/Delete
+// never touch Deps.Registry (only DisplaysList does, for LastSeen).
 func cncDisplaysCreateHandler() handleFunc {
 	return withAdmin(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		var req displayUpsertBody
+		var req settings.Display
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			return http.StatusBadRequest, err
 		}
-		if req.MachineID == "" {
-			return http.StatusBadRequest, errors.New("machineId required")
+		disp, code, err := d.cncapiDeps(nil).DisplaysCreate(req, newDisplayID())
+		if err != nil {
+			return code, err
 		}
-		if findMachine(d.settings, req.MachineID) == nil {
-			return http.StatusBadRequest, errors.New("unknown machineId")
-		}
-		req.ID = newDisplayID()
-		d.settings.Cnc.Displays = append(d.settings.Cnc.Displays, req.Display)
-		if err := d.store.Settings.Save(d.settings); err != nil {
-			return errToStatus(err), err
-		}
-		return renderJSON(w, r, req.Display)
+		return renderJSON(w, r, disp)
 	})
 }
 
 func cncDisplaysUpdateHandler() handleFunc {
 	return withAdmin(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
 		id := mux.Vars(r)["id"]
-		if id == "" {
-			return http.StatusBadRequest, errors.New("display id required")
-		}
-		var req displayUpsertBody
+		var req settings.Display
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			return http.StatusBadRequest, err
 		}
-		if req.MachineID == "" {
-			return http.StatusBadRequest, errors.New("machineId required")
+		disp, code, err := d.cncapiDeps(nil).DisplaysUpdate(id, req)
+		if err != nil {
+			return code, err
 		}
-		if findMachine(d.settings, req.MachineID) == nil {
-			return http.StatusBadRequest, errors.New("unknown machineId")
-		}
-		req.ID = id
-		idx := findDisplayIndex(d.settings, id)
-		if idx < 0 {
-			return http.StatusNotFound, errors.New("display not found")
-		}
-		d.settings.Cnc.Displays[idx] = req.Display
-		if err := d.store.Settings.Save(d.settings); err != nil {
-			return errToStatus(err), err
-		}
-		return renderJSON(w, r, req.Display)
+		return renderJSON(w, r, disp)
 	})
 }
 
 func cncDisplaysDeleteHandler() handleFunc {
 	return withAdmin(func(_ http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		id := mux.Vars(r)["id"]
-		if id == "" {
-			return http.StatusBadRequest, errors.New("display id required")
-		}
-		idx := findDisplayIndex(d.settings, id)
-		if idx < 0 {
-			return http.StatusNotFound, errors.New("display not found")
-		}
-		d.settings.Cnc.Displays = append(
-			d.settings.Cnc.Displays[:idx],
-			d.settings.Cnc.Displays[idx+1:]...,
-		)
-		if err := d.store.Settings.Save(d.settings); err != nil {
-			return errToStatus(err), err
+		code, err := d.cncapiDeps(nil).DisplaysDelete(mux.Vars(r)["id"])
+		if err != nil {
+			return code, err
 		}
 		return 0, nil
 	})
@@ -153,7 +107,7 @@ func cncDisplayFetchHandler(registry *cnc.Registry) handleFunc {
 		if id == "" {
 			return http.StatusBadRequest, errors.New("display id required")
 		}
-		idx := findDisplayIndex(d.settings, id)
+		idx := cncapi.FindDisplayIndex(d.settings.Cnc, id)
 		if idx < 0 {
 			return http.StatusNotFound, errors.New("display not found")
 		}
@@ -174,20 +128,18 @@ func cncDisplayFetchHandler(registry *cnc.Registry) handleFunc {
 		// Record the poll now that the display has proven itself (token
 		// checked out, or none was required). In-memory only — see
 		// Registry.TouchDisplay for why this doesn't touch settings.Save().
-		// Recorded even if the tool-list build below fails downstream:
-		// the display reaching this endpoint at all is the liveness
-		// signal, independent of whether we could answer it.
 		registry.TouchDisplay(id)
-		// buildMachineToolList resolves the tool-table dump directory
-		// through d.pathResolver(). This handler isn't wrapped in
-		// withUser (no JWT from the e-paper), so d.user is nil here;
-		// pathResolver's fallback for that case is a resolver rooted at
-		// the server root — exactly the scope tool-table dumps are
-		// written under (see toolTableDirAbs), and exactly what an
-		// admin user's FullPath would have resolved to. No user object
-		// needs to be borrowed to reach it.
-		payload, status, err := buildMachineToolList(registry, d, disp.MachineID)
+		// This handler isn't wrapped in withUser (no JWT from the
+		// e-paper), so d.user is nil here; d.pathResolver()'s fallback
+		// for that case is a resolver rooted at the server root —
+		// exactly the scope tool-table dumps are written under, and
+		// exactly what an admin user's FullPath would have resolved to.
+		payload, err := d.cncapiDeps(registry).BuildMachineToolList(disp.MachineID)
 		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, cncapi.ErrMachineNotFound) {
+				status = http.StatusNotFound
+			}
 			return status, err
 		}
 		// Resolve defaults into the wire-side config so the firmware
@@ -208,23 +160,9 @@ func cncDisplayFetchHandler(registry *cnc.Registry) handleFunc {
 	}
 }
 
-// findDisplayIndex returns the index of the display whose ID matches,
-// or -1 when none exists. Linear scan — displays are O(devices in shop).
-func findDisplayIndex(s *settings.Settings, id string) int {
-	for i := range s.Cnc.Displays {
-		if s.Cnc.Displays[i].ID == id {
-			return i
-		}
-	}
-	return -1
-}
-
-// newDisplayID returns a 16-hex-char random ID. crypto/rand-backed so
-// two admins creating displays simultaneously don't collide.
+// newDisplayID mirrors cncapi.NewDisplayID under its original name.
 func newDisplayID() string {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	return cncapi.NewDisplayID()
 }
 
 // extractBearer pulls the token out of `Authorization: Bearer <t>`,

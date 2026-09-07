@@ -8,9 +8,9 @@ package fbhttp
 import (
 	"net/http"
 
-	"github.com/filebrowser/filebrowser/v2/cnc"
+	"github.com/filebrowser/filebrowser/v2/cncapi"
 )
 
 var cncHostStatsHandler = withUser(func(w http.ResponseWriter, r *http.Request, _ *data) (int, error) {
-	return renderJSON(w, r, cnc.ReadHostStats())
+	return renderJSON(w, r, cncapi.HostStats())
 })

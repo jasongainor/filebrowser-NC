@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -19,7 +20,16 @@ import (
 // directory as the served root.
 func newTestDeps(t *testing.T, mutate func(*settings.Cnc)) (Deps, *Store) {
 	t.Helper()
-	root := t.TempDir()
+	return newTestDepsWithRoot(t, t.TempDir(), mutate)
+}
+
+// newTestDepsWithRoot is newTestDeps with the served root supplied by
+// the caller, for tests (router_cnc_test.go) that need to write a
+// real file under it — e.g. queue/attach/preflight/start all validate
+// file_path against the root before touching the (offline stub)
+// streamer.
+func newTestDepsWithRoot(t *testing.T, root string, mutate func(*settings.Cnc)) (Deps, *Store) {
+	t.Helper()
 	cfgPath := filepath.Join(t.TempDir(), "cncd.json")
 
 	store, err := LoadStore(cfgPath)
@@ -40,6 +50,16 @@ func newTestDeps(t *testing.T, mutate func(*settings.Cnc)) (Deps, *Store) {
 	t.Cleanup(registry.Stop)
 
 	return Deps{Registry: registry, Config: store, Root: root}, store
+}
+
+// writeFile writes contents to name under root, failing the test on
+// any error. Used by router_cnc_test.go to stage an NC file for
+// routes that validate file_path against the served root.
+func writeFile(t *testing.T, root, name, contents string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o644); err != nil {
+		t.Fatalf("writeFile %s: %v", name, err)
+	}
 }
 
 // withErr is a tiny helper so newTestDeps's Update callback (which

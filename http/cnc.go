@@ -11,8 +11,6 @@ package fbhttp
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +26,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/filebrowser/filebrowser/v2/cnc"
+	"github.com/filebrowser/filebrowser/v2/cncapi"
 	"github.com/filebrowser/filebrowser/v2/settings"
 )
 
@@ -138,111 +137,26 @@ func cncSettingsPutHandler(registry *cnc.Registry) handleFunc {
 }
 
 // normalizeMachines validates + assigns IDs to a Machines list before
-// it lands in storage. Reuses existing IDs where Names match (so an
-// edit doesn't tear down a streamer); generates new IDs for new
-// entries. Empty list is rejected — the install must always have at
-// least one machine.
+// it lands in storage. Kept under its original name (rather than
+// inlined as cncapi.NormalizeMachines at the one call site) so
+// cnc_serial_only_test.go keeps testing this exact code path; the
+// actual validation lives in cncapi, shared with cncd's settings PUT.
 func normalizeMachines(in []settings.Machine, existing []settings.Machine) ([]settings.Machine, error) {
-	if len(in) == 0 {
-		return nil, fmt.Errorf("at least one machine required")
-	}
-	seenIDs := make(map[string]struct{}, len(in))
-	out := make([]settings.Machine, 0, len(in))
-	for i, m := range in {
-		if strings.TrimSpace(m.Name) == "" {
-			return nil, fmt.Errorf("machine %d: name required", i)
-		}
-		// A machine is reached either over TCP (Host:Port, the Waveshare
-		// bridge) or over a direct serial device (cnc/serial_transport.go,
-		// PR #140). One of the two is required; both may be set, and
-		// Serial.Device wins at dial time.
-		if strings.TrimSpace(m.Host) == "" && strings.TrimSpace(m.Serial.Device) == "" {
-			return nil, fmt.Errorf("machine %d (%s): host or serial.device required", i, m.Name)
-		}
-		if m.Port <= 0 {
-			m.Port = settings.DefaultHaasPort
-		}
-		if m.Port > 65535 {
-			return nil, fmt.Errorf("machine %d (%s): port out of range", i, m.Name)
-		}
-		if m.ToolSlots < 0 || m.ToolSlots > 200 {
-			return nil, fmt.Errorf("machine %d (%s): toolSlots must be 0..200", i, m.Name)
-		}
-		if strings.TrimSpace(m.Brand) == "" {
-			m.Brand = settings.MachineBrandHaas
-		}
-		switch m.CameraType {
-		case "", "auto", "hls", "mjpeg", "iframe", "none":
-			if m.CameraType == "" {
-				m.CameraType = "auto"
-			}
-		default:
-			return nil, fmt.Errorf("machine %d (%s): invalid cameraType %q", i, m.Name, m.CameraType)
-		}
-		// Axes: validate the letters (drop unknowns), canonicalize
-		// case. Empty list survives — the consumer treats that as the
-		// default X/Y/Z trio.
-		if len(m.AxesEnabled) > 0 {
-			seen := map[string]bool{}
-			allow := map[string]bool{"X": true, "Y": true, "Z": true, "A": true, "B": true, "C": true}
-			out := make([]string, 0, len(m.AxesEnabled))
-			for _, a := range m.AxesEnabled {
-				u := strings.ToUpper(strings.TrimSpace(a))
-				if !allow[u] || seen[u] {
-					continue
-				}
-				seen[u] = true
-				out = append(out, u)
-			}
-			m.AxesEnabled = out
-		}
-		if m.PositionToleranceIn < 0 {
-			return nil, fmt.Errorf("machine %d (%s): positionToleranceIn must be >= 0", i, m.Name)
-		}
-		if m.ID == "" {
-			m.ID = newMachineID()
-		}
-		if _, dupe := seenIDs[m.ID]; dupe {
-			return nil, fmt.Errorf("machine %d (%s): duplicate id %q", i, m.Name, m.ID)
-		}
-		seenIDs[m.ID] = struct{}{}
-		_ = existing // currently unused; kept for future "preserve ID by name match" rules
-		out = append(out, m)
-	}
-	return out, nil
+	return cncapi.NormalizeMachines(in, existing)
 }
 
+// newMachineID mirrors cncapi.NewMachineID under its original name.
 func newMachineID() string {
-	// 16-byte URL-safe random (~22 chars). Operators configure
-	// a handful of machines per install, no collision risk.
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		// Crypto-rand failure is exotic; fall back to a timestamp
-		// so the install isn't bricked. Collision risk negligible at
-		// machine-config cadence.
-		return fmt.Sprintf("m%d", time.Now().UnixNano())
-	}
-	return base64.RawURLEncoding.EncodeToString(buf)
+	return cncapi.NewMachineID()
 }
 
 // cncMachinesListHandler returns the configured Machines (id + name +
 // host:port + camera). Auth: any logged-in user — the frontend store
 // needs this to drive the machine switcher.
 func cncMachinesListHandler(registry *cnc.Registry) handleFunc {
-	return withUser(func(w http.ResponseWriter, r *http.Request, _ *data) (int, error) {
-		return renderJSON(w, r, map[string]any{
-			"machines":  registry.Machines(),
-			"default_id": defaultMachineID(registry),
-		})
+	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
+		return renderJSON(w, r, d.cncapiDeps(registry).MachinesList())
 	})
-}
-
-func defaultMachineID(registry *cnc.Registry) string {
-	ms := registry.Machines()
-	if len(ms) == 0 {
-		return ""
-	}
-	return ms[0].ID
 }
 
 // defaultToolSlotsForMachine looks up the machine's configured ToolSlots
@@ -260,11 +174,11 @@ func defaultToolSlotsForMachine(d *data, machineID string) int {
 }
 
 var cncRegenerateTokenHandler = withAdmin(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
+	tok, err := cncapi.NewMachineToken()
+	if err != nil {
 		return http.StatusInternalServerError, err
 	}
-	d.settings.Cnc.MachineToken = base64.RawURLEncoding.EncodeToString(buf)
+	d.settings.Cnc.MachineToken = tok
 	if err := d.store.Settings.Save(d.settings); err != nil {
 		return errToStatus(err), err
 	}
@@ -293,19 +207,10 @@ func resolveAggregator(registry *cnc.Registry, r *http.Request) (*cnc.Aggregator
 }
 
 func cncStatusHandler(registry *cnc.Registry) handleFunc {
-	return withUser(func(w http.ResponseWriter, r *http.Request, _ *data) (int, error) {
-		st, machineID, code, err := resolveStreamer(registry, r)
+	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
+		body, code, err := d.cncapiDeps(registry).Status(r.URL.Query().Get("machine_id"), "/files")
 		if err != nil {
 			return code, err
-		}
-		s := st.Status()
-		body := struct {
-			*cnc.Status
-			MachineID string `json:"machine_id"`
-			FileURL   string `json:"file_url,omitempty"`
-		}{Status: s, MachineID: machineID}
-		if s.FilePath != "" {
-			body.FileURL = "/files" + ensureLeading(s.FilePath)
 		}
 		return renderJSON(w, r, body)
 	})
@@ -514,33 +419,22 @@ func cncProbeToolLifeHandler(registry *cnc.Registry) handleFunc {
 	})
 }
 
-// toolTableHistoryEntry is the lightweight summary returned by the
-// list endpoint — just enough to drive the history dropdown without
-// loading every JSON dump into memory.
-type toolTableHistoryEntry struct {
-	// Path is user-scope-relative — pluggable into <a href="/files{path}">.
-	Path           string    `json:"path"`
-	Filename       string    `json:"filename"`
-	ModifiedAt     time.Time `json:"modified_at"`
-	SizeBytes      int64     `json:"size_bytes"`
-	SlotsRequested int       `json:"slots_requested,omitempty"`
-	SlotsRead      int       `json:"slots_read,omitempty"`
-}
-
 // cncToolTableReadHandler reads the live tool table from the controller,
 // writes it to <user-scope>/cnc-tool-tables/<machine-id>/<RFC3339>.json,
 // and returns the table. Partial reads (timeout / cancel) still persist
 // so the operator never loses progress on a long read.
 func cncToolTableReadHandler(registry *cnc.Registry) handleFunc {
 	return withAdmin(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		st, machineID, code, err := resolveStreamer(registry, r)
+		cd := d.cncapiDeps(registry)
+		machineID := r.URL.Query().Get("machine_id")
+		_, resolvedID, code, err := cd.ResolveStreamer(machineID)
 		if err != nil {
 			return code, err
 		}
 		// Default to the machine's configured ToolSlots so an operator
 		// who set "20 pockets" once doesn't have to remember to pass
 		// ?slots=20 on every read. Explicit ?slots= still overrides.
-		slots := defaultToolSlotsForMachine(d, machineID)
+		slots := cncapi.DefaultToolSlotsForMachine(cd.Store.Snapshot(), resolvedID)
 		if q := r.URL.Query().Get("slots"); q != "" {
 			n, err := strconv.Atoi(q)
 			if err != nil || n < 1 || n > 200 {
@@ -554,21 +448,16 @@ func cncToolTableReadHandler(registry *cnc.Registry) handleFunc {
 		// Operator triggers and walks away — the request idles cheap.
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
 		defer cancel()
-		tbl, readErr := st.ReadToolTable(ctx, slots)
-
-		// If we got a partial table on context cancel, persist + return
-		// it anyway so the operator's progress isn't lost. Only bail
-		// when there's truly nothing to surface.
-		if tbl == nil {
-			return errToStatus(readErr), readErr
+		env, code, err := cd.ToolTableReadLive(ctx, machineID, slots)
+		if err != nil {
+			return code, err
 		}
-
-		envelope := map[string]any{"table": tbl}
-		if readErr != nil {
-			envelope["read_error"] = readErr.Error()
+		envelope := map[string]any{"table": env.Table}
+		if env.ReadError != "" {
+			envelope["read_error"] = env.ReadError
 		}
-		if err := persistToolTable(d, machineID, tbl); err != nil {
-			envelope["persist_error"] = err.Error()
+		if env.PersistError != "" {
+			envelope["persist_error"] = env.PersistError
 		}
 		return renderJSON(w, r, envelope)
 	})
@@ -580,41 +469,15 @@ func cncToolTableReadHandler(registry *cnc.Registry) handleFunc {
 // without needing admin to trigger a fresh read.
 func cncToolTableLatestHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		_, machineID, code, err := resolveStreamer(registry, r)
+		tbl, found, code, err := d.cncapiDeps(registry).ToolTableLatest(r.URL.Query().Get("machine_id"))
 		if err != nil {
 			return code, err
 		}
-		dir, err := toolTableDirAbs(d, machineID)
-		if err != nil {
-			return http.StatusBadRequest, err
-		}
-		latest, err := newestJSONIn(dir)
-		if err != nil {
-			return http.StatusInternalServerError, err
-		}
-		if latest == "" {
+		if !found {
 			w.WriteHeader(http.StatusNoContent)
 			return 0, nil
 		}
-		buf, err := os.ReadFile(latest)
-		if err != nil {
-			return http.StatusInternalServerError, err
-		}
-		// Pass through verbatim — table is already valid JSON. The
-		// frontend wraps it in {"table": ...} the same as the read
-		// handler so downstream parsing is uniform. Errors writing
-		// to the response are uninteresting (client likely closed);
-		// surface via the handler return only if the first write
-		// fails so the caller knows the body was truncated.
-		w.Header().Set("Content-Type", "application/json")
-		if _, err := w.Write([]byte(`{"table":`)); err != nil {
-			return 0, err
-		}
-		if _, err := w.Write(buf); err != nil {
-			return 0, err
-		}
-		_, _ = w.Write([]byte(`}`))
-		return 0, nil
+		return renderJSON(w, r, map[string]any{"table": tbl})
 	})
 }
 
@@ -623,65 +486,12 @@ func cncToolTableLatestHandler(registry *cnc.Registry) handleFunc {
 // Newest-first.
 func cncToolTableHistoryHandler(registry *cnc.Registry) handleFunc {
 	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
-		_, machineID, code, err := resolveStreamer(registry, r)
+		body, code, err := d.cncapiDeps(registry).ToolTableHistory(
+			r.URL.Query().Get("machine_id"), toolTableShareDir)
 		if err != nil {
 			return code, err
 		}
-		dir, err := toolTableDirAbs(d, machineID)
-		if err != nil {
-			return http.StatusBadRequest, err
-		}
-		shareRel := path.Join(toolTableShareDir, sanitizeMachineID(machineID))
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return renderJSON(w, r, map[string]any{
-					"machine_id": machineID,
-					"folder":     shareRel,
-					"entries":    []toolTableHistoryEntry{},
-				})
-			}
-			return http.StatusInternalServerError, err
-		}
-
-		out := make([]toolTableHistoryEntry, 0, len(entries))
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-				continue
-			}
-			info, err := e.Info()
-			if err != nil {
-				continue
-			}
-			ent := toolTableHistoryEntry{
-				Path:       path.Join(shareRel, e.Name()),
-				Filename:   e.Name(),
-				ModifiedAt: info.ModTime(),
-				SizeBytes:  info.Size(),
-			}
-			// Cheap header-only parse so the dropdown can show
-			// slots-read at a glance. Don't load the full slots
-			// array — a 200-slot dump is ~30 KB and we'd be reading
-			// dozens of them.
-			if buf, err := os.ReadFile(filepath.Join(dir, e.Name())); err == nil {
-				var hdr struct {
-					SlotsRequested int `json:"slots_requested"`
-					SlotsRead      int `json:"slots_read"`
-				}
-				_ = json.Unmarshal(buf, &hdr)
-				ent.SlotsRequested = hdr.SlotsRequested
-				ent.SlotsRead = hdr.SlotsRead
-			}
-			out = append(out, ent)
-		}
-		sort.Slice(out, func(i, j int) bool {
-			return out[i].ModifiedAt.After(out[j].ModifiedAt)
-		})
-		return renderJSON(w, r, map[string]any{
-			"machine_id": machineID,
-			"folder":     shareRel,
-			"entries":    out,
-		})
+		return renderJSON(w, r, body)
 	})
 }
 
@@ -814,35 +624,6 @@ func readToolTableDump(dir, name string) (*cnc.ToolTable, error) {
 	return &t, nil
 }
 
-// persistToolTable writes the table as <RFC3339>.json into the
-// per-machine subfolder under the user scope. The folder is created
-// on first write so an operator who never runs a read sees no clutter
-// in their browser.
-func persistToolTable(d *data, machineID string, tbl *cnc.ToolTable) error {
-	dir, err := toolTableDirAbs(d, machineID)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("mkdir tool-table dir: %w", err)
-	}
-	// Filesystem-safe RFC3339 — colons aren't legal on FAT/exFAT
-	// (which the USB-gadget mass-storage image uses for the
-	// Haas-side mount), so swap them for hyphens.
-	stamp := tbl.ReadAt.UTC().Format("2006-01-02T15-04-05Z")
-	name := stamp + ".json"
-	full := filepath.Join(dir, name)
-	buf, err := json.MarshalIndent(tbl, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := full + ".tmp"
-	if err := os.WriteFile(tmp, buf, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, full)
-}
-
 func toolTableDirAbs(d *data, machineID string) (string, error) {
 	rel := path.Join(toolTableShareDir, sanitizeMachineID(machineID))
 	return d.pathResolver().FullPath(rel)
@@ -866,51 +647,6 @@ func sanitizeMachineID(id string) string {
 		return "default"
 	}
 	return cleaned
-}
-
-func newestJSONIn(dir string) (string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	var (
-		newest    string
-		newestMod time.Time
-	)
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().After(newestMod) {
-			newestMod = info.ModTime()
-			newest = filepath.Join(dir, e.Name())
-		}
-	}
-	return newest, nil
-}
-
-// findMachine returns the Settings.Machine entry matching id, or
-// machines[0] when id is empty. nil if the registry is empty.
-func findMachine(s *settings.Settings, id string) *settings.Machine {
-	if s == nil || len(s.Cnc.Machines) == 0 {
-		return nil
-	}
-	if id == "" {
-		return &s.Cnc.Machines[0]
-	}
-	for i := range s.Cnc.Machines {
-		if s.Cnc.Machines[i].ID == id {
-			return &s.Cnc.Machines[i]
-		}
-	}
-	return nil
 }
 
 type cncStartBody struct {
@@ -937,110 +673,16 @@ func cncStartHandler(registry *cnc.Registry) handleFunc {
 		if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 			return http.StatusBadRequest, err
 		}
-		if req.FilePath == "" {
-			return http.StatusBadRequest, errors.New("file_path required")
-		}
-		// Body wins over query param when both are sent.
-		machineID := req.MachineID
-		if machineID == "" {
-			machineID = r.URL.Query().Get("machine_id")
-		}
-		streamer, _ := registry.Streamer(machineID)
-		if streamer == nil {
-			return http.StatusNotFound, fmt.Errorf("no machine configured (id=%q)", machineID)
-		}
-		ag, _ := registry.Aggregator(machineID)
-		if ag != nil {
-			ag.Wake(0)
-		}
-
-		clean := path.Clean(ensureLeading(req.FilePath))
-		if strings.Contains(clean, "..") {
-			return http.StatusBadRequest, errors.New("file_path must not escape the share")
-		}
-		absPath, err := d.pathResolver().FullPath(clean)
+		jobID, code, err := d.cncapiDeps(registry).Start(cncapi.StartRequest{
+			FilePath:  req.FilePath,
+			MachineID: req.MachineID,
+			Method:    req.Method,
+			QueueID:   req.QueueID,
+		}, r.URL.Query().Get("machine_id"))
 		if err != nil {
-			return http.StatusBadRequest, err
+			return code, err
 		}
-
-		// Hard-block preflight gate. When the machine has
-		// RequirePreflight=true in settings, refuse the send if any
-		// program-referenced tool comes back missing or empty in the
-		// latest persisted tool table. The wizard already soft-warns;
-		// this turns it into a server-enforced refusal so the
-		// operator can't bypass by hammering the API directly.
-		machineCfg := findMachine(d.settings, machineID)
-		if machineCfg != nil && machineCfg.RequirePreflight {
-			var table *cnc.ToolTable
-			dir, direrr := toolTableDirAbs(d, machineID)
-			if direrr != nil {
-				return http.StatusBadRequest, direrr
-			}
-			if latestPath, _ := newestJSONIn(dir); latestPath != "" {
-				if buf, rerr := os.ReadFile(latestPath); rerr == nil {
-					var t cnc.ToolTable
-					if json.Unmarshal(buf, &t) == nil {
-						table = &t
-					}
-				}
-			}
-			pf, perr := cnc.BuildPreflight(absPath, clean, machineID, table, currentSpindleTool(registry, machineID))
-			if perr == nil {
-				if pf.TableMissing {
-					return http.StatusConflict, errors.New(
-						"preflight required: no tool-table read on file for this machine — read the table on /machine first")
-				}
-				if pf.Summary.Missing > 0 || pf.Summary.Empty > 0 {
-					return http.StatusConflict, fmt.Errorf(
-						"preflight required: %d missing, %d empty pocket — fix on the controller or disable Require preflight in Settings → Machine",
-						pf.Summary.Missing, pf.Summary.Empty)
-				}
-			}
-			// If BuildPreflight itself failed (e.g. couldn't parse the
-			// NC), fall through to the existing Start error path —
-			// don't let a parser hiccup wedge sends behind a gate that
-			// can't actually evaluate.
-		}
-
-		method := cnc.NormalizeSendMethod(req.Method)
-		// Mark the queue row as in-flight before the streamer takes
-		// the job. The queue state must broadcast even when Start
-		// errors (the row stays "sending" briefly so the UI shows
-		// what was attempted), so the demote happens on the error
-		// path below.
-		if req.QueueID != "" {
-			if qs := registry.Queues(); qs != nil {
-				if _, qerr := qs.MarkSending(machineID, req.QueueID, string(method)); qerr == nil {
-					streamer.EmitQueueSnapshot(qs.List(machineID))
-				}
-			}
-		}
-		st, err := streamer.Start(absPath, clean, method)
-		switch {
-		case errors.Is(err, cnc.ErrJobAlreadyRunning):
-			return http.StatusConflict, err
-		case errors.Is(err, cnc.ErrRecoveryPending):
-			return http.StatusConflict, err
-		case errors.Is(err, cnc.ErrConfigMissing):
-			// Start failed before any bytes went out — demote the
-			// queue row so the operator can retry, fix config, etc.
-			if req.QueueID != "" {
-				if qs := registry.Queues(); qs != nil {
-					qs.ClearInFlight(machineID)
-					streamer.EmitQueueSnapshot(qs.List(machineID))
-				}
-			}
-			return http.StatusBadRequest, err
-		case err != nil:
-			if req.QueueID != "" {
-				if qs := registry.Queues(); qs != nil {
-					qs.ClearInFlight(machineID)
-					streamer.EmitQueueSnapshot(qs.List(machineID))
-				}
-			}
-			return errToStatus(err), err
-		}
-		return renderJSON(w, r, map[string]string{"job_id": st.JobID})
+		return renderJSON(w, r, map[string]string{"job_id": jobID})
 	})
 }
 
@@ -1053,93 +695,13 @@ func cncPreflightHandler(registry *cnc.Registry) handleFunc {
 		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
-		filePath := r.URL.Query().Get("file_path")
-		if filePath == "" {
-			return http.StatusBadRequest, errors.New("file_path required")
-		}
-		clean := path.Clean(ensureLeading(filePath))
-		if strings.Contains(clean, "..") {
-			return http.StatusBadRequest, errors.New("file_path must not escape the share")
-		}
-		absPath, err := d.pathResolver().FullPath(clean)
-		if err != nil {
-			return http.StatusBadRequest, err
-		}
-
-		_, machineID, code, err := resolveStreamer(registry, r)
+		pf, code, err := d.cncapiDeps(registry).Preflight(
+			r.URL.Query().Get("file_path"), r.URL.Query().Get("machine_id"))
 		if err != nil {
 			return code, err
 		}
-
-		// Load the latest persisted tool-table dump for this machine.
-		// nil == no dump yet → BuildPreflight returns "missing" rows.
-		var table *cnc.ToolTable
-		dir, direrr := toolTableDirAbs(d, machineID)
-		if direrr != nil {
-			return http.StatusBadRequest, direrr
-		}
-		latestPath, _ := newestJSONIn(dir)
-		if latestPath != "" {
-			if buf, err := os.ReadFile(latestPath); err == nil {
-				var t cnc.ToolTable
-				if json.Unmarshal(buf, &t) == nil {
-					table = &t
-				}
-			}
-		}
-
-		// Pull the controller's current spindle tool from the
-		// aggregator snapshot. Best-effort — if the metric is stale
-		// or missing the preflight just omits the swap warning rather
-		// than failing the whole call.
-		spindleTool := currentSpindleTool(registry, machineID)
-
-		pf, err := cnc.BuildPreflight(absPath, clean, machineID, table, spindleTool)
-		if err != nil {
-			return errToStatus(err), err
-		}
 		return renderJSON(w, r, pf)
 	})
-}
-
-// currentSpindleTool reads the aggregator's "tool" metric (Q201) for
-// the given machine and parses it to an int. Returns nil when the
-// metric is unavailable, stale, or unparseable — caller treats nil
-// as "swap unknown".
-func currentSpindleTool(registry *cnc.Registry, machineID string) *int {
-	ag, _ := registry.Aggregator(machineID)
-	if ag == nil {
-		return nil
-	}
-	snap := ag.Snapshot()
-	m, ok := snap["tool"]
-	if !ok || m == nil || m.Stale {
-		return nil
-	}
-	// The aggregator's Q201 parser leaves the int either in `parsed`
-	// (preferred) or as a number-shaped string in `value`.
-	switch v := m.Parsed.(type) {
-	case int:
-		x := v
-		return &x
-	case int64:
-		x := int(v)
-		return &x
-	case float64:
-		x := int(v)
-		return &x
-	}
-	if m.Value != "" {
-		s := strings.TrimSpace(m.Value)
-		// Q201 frame shape: "STATUS,TOOL,5". Take the trailing token.
-		if i := strings.LastIndex(s, ","); i >= 0 {
-			s = strings.TrimSpace(s[i+1:])
-		}
-		if n, err := strconv.Atoi(s); err == nil {
-			return &n
-		}
-	}
-	return nil
 }
 
 func cncStopHandler(registry *cnc.Registry) handleFunc {
@@ -1147,18 +709,9 @@ func cncStopHandler(registry *cnc.Registry) handleFunc {
 		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
-		st, machineID, code, err := resolveStreamer(registry, r)
+		stopped, code, err := d.cncapiDeps(registry).Stop(r.URL.Query().Get("machine_id"))
 		if err != nil {
 			return code, err
-		}
-		stopped := st.Stop()
-		// Clear any in-flight queue row regardless of whether Stop
-		// reported a job to actually halt — operators sometimes hit
-		// Stop after a controller-side abort, and the queue should
-		// match reality.
-		if qs := registry.Queues(); qs != nil {
-			qs.ClearInFlight(machineID)
-			st.EmitQueueSnapshot(qs.List(machineID))
 		}
 		return renderJSON(w, r, map[string]bool{"stopped": stopped})
 	})
@@ -1195,11 +748,10 @@ func cncRecoveryAckHandler(registry *cnc.Registry) handleFunc {
 		if !d.authz().CanModify() {
 			return http.StatusForbidden, nil
 		}
-		st, _, code, err := resolveStreamer(registry, r)
+		code, err := d.cncapiDeps(registry).RecoveryAck(r.URL.Query().Get("machine_id"))
 		if err != nil {
 			return code, err
 		}
-		st.AckRecovery()
 		return renderJSON(w, r, map[string]bool{"acknowledged": true})
 	})
 }

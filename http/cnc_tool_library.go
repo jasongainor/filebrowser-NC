@@ -4,6 +4,11 @@ package fbhttp
 // library export so the dashboard can enrich live tool-table rows
 // with descriptions, vendor links, flute counts, and (eventually) a
 // revolved-profile SVG. Admin-only on PUT/DELETE; user-readable on GET.
+//
+// GET/PUT logic lives in cncapi.Deps.ToolLibraryGet/Put, shared with
+// cncd; DELETE and the per-slot lookup have no cncd route yet (see
+// docs/CNCD.md) so they stay filebrowser-only, using the registry
+// directly.
 
 import (
 	"errors"
@@ -13,39 +18,12 @@ import (
 	"strings"
 
 	"github.com/filebrowser/filebrowser/v2/cnc"
+	"github.com/filebrowser/filebrowser/v2/cncapi"
 )
 
-// uploadCap bounds the request body so a malicious operator can't
-// dump a few GB into the config dir. A real Fusion export of ~50
-// tools is ~150 KB; 4 MB is well past anything a shop would have.
-const toolLibraryUploadCap = 4 * 1024 * 1024
-
 func cncToolLibraryGetHandler(registry *cnc.Registry) handleFunc {
-	return withUser(func(w http.ResponseWriter, r *http.Request, _ *data) (int, error) {
-		store := registry.LibraryStore()
-		if store == nil {
-			return renderJSON(w, r, map[string]any{
-				"data":            []any{},
-				"loaded":          false,
-				"assigned_slots":  []int{},
-			})
-		}
-		lib := store.Library()
-		if lib == nil {
-			return renderJSON(w, r, map[string]any{
-				"data":            []any{},
-				"loaded":          false,
-				"assigned_slots":  []int{},
-			})
-		}
-		raw := lib.Raw()
-		return renderJSON(w, r, map[string]any{
-			"data":           raw.Data,
-			"version":        raw.Version,
-			"uploaded_at":    raw.UploadedAt,
-			"loaded":         true,
-			"assigned_slots": lib.AssignedSlots(),
-		})
+	return withUser(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
+		return renderJSON(w, r, d.cncapiDeps(registry).ToolLibraryGet())
 	})
 }
 
@@ -82,27 +60,17 @@ func cncToolLibrarySlotHandler(registry *cnc.Registry) handleFunc {
 // cncToolLibraryPutHandler replaces the stored library with the
 // supplied JSON. Admin-only.
 func cncToolLibraryPutHandler(registry *cnc.Registry) handleFunc {
-	return withAdmin(func(w http.ResponseWriter, r *http.Request, _ *data) (int, error) {
-		store := registry.LibraryStore()
-		if store == nil {
-			return http.StatusServiceUnavailable, errors.New("tool-library store not initialised")
-		}
-		r.Body = http.MaxBytesReader(w, r.Body, toolLibraryUploadCap)
+	return withAdmin(func(w http.ResponseWriter, r *http.Request, d *data) (int, error) {
+		r.Body = http.MaxBytesReader(w, r.Body, cncapi.ToolLibraryUploadCap)
 		buf, err := io.ReadAll(r.Body)
 		if err != nil {
 			return http.StatusBadRequest, err
 		}
-		lib, err := store.Replace(buf)
+		body, code, err := d.cncapiDeps(registry).ToolLibraryPut(buf)
 		if err != nil {
-			return http.StatusBadRequest, err
+			return code, err
 		}
-		raw := lib.Raw()
-		return renderJSON(w, r, map[string]any{
-			"loaded":         true,
-			"uploaded_at":    raw.UploadedAt,
-			"assigned_slots": lib.AssignedSlots(),
-			"count":          len(raw.Data),
-		})
+		return renderJSON(w, r, body)
 	})
 }
 

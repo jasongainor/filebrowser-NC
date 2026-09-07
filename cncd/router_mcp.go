@@ -40,7 +40,7 @@ func NewMCPServer(d Deps) *mcpserver.MCPServer {
 		Resolver: resolver,
 		Root:     d.Root,
 		FindMachine: func(id string) *settings.Machine {
-			return findMachine(d.Config.Snapshot(), id)
+			return cncapi.FindMachine(d.Config.Snapshot(), id)
 		},
 		LatestToolTable: func(machineID string) (*cnc.ToolTable, error) {
 			return latestToolTable(resolver, machineID)
@@ -66,11 +66,11 @@ func registerMCP(r *mux.Router, d Deps) {
 // for machineID, mirroring the read buildMachineToolList does in
 // toollist.go — (nil, nil) when no dump has ever been written.
 func latestToolTable(resolver cncapi.PathResolver, machineID string) (*cnc.ToolTable, error) {
-	dir, err := toolTableDirAbs(resolver, machineID)
+	dir, err := cncapi.Deps{Resolver: resolver}.ToolTableDirAbs(machineID)
 	if err != nil {
 		return nil, err
 	}
-	latest, err := newestJSONIn(dir)
+	latest, err := cncapi.NewestJSONIn(dir)
 	if err != nil {
 		return nil, err
 	}
