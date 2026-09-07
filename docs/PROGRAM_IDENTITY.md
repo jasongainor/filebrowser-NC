@@ -59,7 +59,16 @@ Rules (Haas-safe):
 | `GMW-POST` | Post name, then post version | `HAAS-NGC V1.0.3` |
 | `GMW-POSTED` | UTC timestamp, RFC 3339 | `2026-09-07T14:22:00Z` |
 | `GMW-TOOLS` | Tool count, for a fast sanity check without reading the sidecar | `3` |
-| `GMW-SHA` | sha256 (hex) of the file **body**, i.e. everything after the header block | 64 hex chars |
+| `GMW-SHA` | sha256 (hex) of the file **body**, i.e. everything after the header block, when the post can compute it — otherwise the literal string `PENDING` | 64 hex chars, or `PENDING` |
+
+`GMW-SHA` is written as `PENDING` by the `.cps` snippet in §3, not a real hash — the
+post kernel's JS sandbox has no hash/crypto primitive to compute it with (verified
+against the Autodesk Post Processor Reference's full 57-class index: no `Hash`,
+`Crc`, `Md5`, or `Sha` class exists). `cnc.ParseIdentity` already computes the real
+sha256 of the body independently in Go (`ComputedSHA256`, unaffected by whatever the
+header says) and is the source of truth; `SHAMatch` will read `false` whenever the
+header says `PENDING`, which is expected, not a corruption signal. See §3's SHA-256
+note for the full tradeoff.
 
 `GMW-SHA` is what makes "re-posting with the same body" detectable: the
 hash covers only the body, so re-running the post at a different time (new
@@ -142,22 +151,44 @@ geometry, reach, and the per-operation list.
   tool, as a positive number of inches — the maximum across every operation
   that reuses the tool. `min_z` is the raw signed value the post read off
   `section.getGlobalZRange()`, kept for debugging; `max_depth` is what
-  `ReconcileTools` actually uses (see §4). Whether `min_z == -max_depth`
-  depends on the WCS Z=0 convention the post/CAM setup uses — **verify in
-  Fusion** that Z=0 is stock top for this post's setups before trusting the
-  sign flip blindly.
+  `ReconcileTools` actually uses (see §4). `getGlobalZRange()` is confirmed
+  (Post Processor Reference, `classSection.html`: "Returns the Z-coordinate
+  range of the toolpath of the section in the global coordinate system.")
+  and its use to build a per-tool Z range is exactly what the stock Haas
+  Next Generation post itself does in `writeProgramHeader()` (called from
+  `onOpen`) to print `ZMIN=` in the tool-list comment. What the reference
+  does **not** say is whether "global coordinate system" Z=0 lands on stock
+  top for a given CAM setup's WCS — that's a property of how each job's
+  Fusion setup is built, not of the kernel, so it genuinely can't be
+  confirmed from documentation alone. **Verify in Fusion**: confirm Z=0 is
+  stock top for the setups this post runs before trusting `max_depth =
+  -min_z` blindly. This is the one item in this document that stays a
+  verify-in-Fusion checkbox after cross-checking every other field against
+  the reference and the shipped Haas post source (see §3).
 - `flute_length` limits how deep the tool can cut at all; `stickout_length`
   (tool exposed below the holder) limits how deep before the *holder*
   collides with the part or a fixture. Both are needed because a reach can
-  clear the flute but still crash the holder into a clamp.
+  clear the flute but still crash the holder into a clamp. `stickout_length`
+  is now sourced from the same parameter the stock Haas post itself reads
+  for exactly this purpose — see the `getBodyLength()` note in §3.
 - `stock_to_leave` is per-operation because roughing and finishing passes
   on the same tool normally use different values.
-- `guid` is the Fusion tool-library GUID when the post can obtain it. Per
-  the open question already on record in
-  `docs/PROGRAM_DELIVERY_AND_LIBRARY_SYNC_TODO.md` section A, the post
-  kernel's exact accessor for this is unconfirmed — **verify in Fusion**.
-  `ReconcileTools` does not require it; it is carried for a future
-  GUID-keyed reconciliation and for humans reading the file.
+- `guid` is **not obtainable**. The Post Processor Reference's `Tool` class
+  page lists every public member (78 methods, 60 attributes, confirmed by
+  reading the full member table) and none of them is a GUID/unique-id
+  accessor other than `getToolId()` — which is documented as "internal
+  (unique) id of the tool **in a Fusion/Inventor document**," not a
+  tool-library GUID, and is not the identifier
+  `docs/PROGRAM_DELIVERY_AND_LIBRARY_SYNC_TODO.md` section A is asking for.
+  There is also zero use of any `guid`-like accessor anywhere in the
+  current shipped Haas Next Generation post source. The field stays in the
+  schema (as optional — see below) for forward compatibility, but the
+  `.cps` snippet in §3 always writes it as `""`; this is resolved, not
+  unconfirmed. `ReconcileTools` does not require it.
+- `sha256` is written by the post as `PENDING`, not a real hash — see the
+  header field table above and §3's SHA-256 note for why, and why that's
+  safe. It is no longer `required` below for that reason, and its pattern
+  accepts `PENDING` alongside a real hex digest.
 
 ### JSON Schema (draft-07)
 
@@ -166,7 +197,7 @@ geometry, reach, and the per-operation list.
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "GMW program identity sidecar",
   "type": "object",
-  "required": ["schema_version", "job", "sha256", "tools"],
+  "required": ["schema_version", "job", "tools"],
   "properties": {
     "schema_version": {"type": "integer", "minimum": 1},
     "job": {"type": "string"},
@@ -176,7 +207,7 @@ geometry, reach, and the per-operation list.
     "post_version": {"type": "string"},
     "posted_at": {"type": "string", "format": "date-time"},
     "tool_count": {"type": "integer", "minimum": 0},
-    "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+    "sha256": {"type": "string", "pattern": "^([0-9a-fA-F]{64}|PENDING)$"},
     "tools": {
       "type": "array",
       "items": {
@@ -223,48 +254,62 @@ Paste into the Haas `.cps`. This is written to *merge into* whatever
 `onOpen` / `onSection` / `onClose` already exist in Jason's post — do not
 replace them; add the calls shown at the marked points.
 
-**Confidence note up front:** the post kernel (the JS engine used by
-Fusion's CAM post processors, formerly the HSMWorks post engine) is not
-vendored in this repo and there is no live Fusion instance to test against
-here, so every API name below is offline knowledge, not something this
-change could execute and confirm. Where I have reasonable confidence
-(commonly used in the public Autodesk sample posts) that's noted; where I
-don't, it's marked **verify in Fusion** rather than asserted. Do not treat
-anything in this section as confirmed until it's been run through the
-post's own debugger/`writeln` output once. The full list is repeated as a
-checklist at the end of this section.
+**Verification note:** every API name below has been checked against two
+primary sources: Autodesk's Post Processor Reference
+(`cam.autodesk.com/posts/reference/`, fetched class-by-class — `Tool`,
+`Section`, `PostProcessor`, `Holder`, `TextFile`, `FileSystem`,
+`ToolTable`, `Base64`, `Date`, plus the full 57-class index and the
+`entry_functions.html` page) and the actual shipped Haas Next Generation
+post source (`cam.autodesk.com/posts/download.php?name=haas next
+generation`, r44241, dated 2026-09-02 — the same post Jason is pasting
+this into). Where the two sources agreed, or the shipped post uses the
+exact call, that's marked high confidence. The only item that could not be
+resolved this way is the Z=0/stock-top convention noted under
+`gmwCollectAll` below, because that's a property of each CAM setup, not of
+the kernel or the post. The full list is repeated as a checklist at the
+end of this section — it is now three lines long.
 
 ### Properties (post configuration, set once per machine/post)
 
-```js
-properties.gmwJob  = "";   // Carbon jobReadableId, e.g. "J000020" -- set at post time
-properties.gmwOp   = "";   // Carbon operation id/seq, e.g. "OP10"
-properties.gmwPart = "";   // part or item id, e.g. "F-BRACKET-REV-C"
+The two-object `properties.x = value` / `propertyDefinitions.x = {...}`
+pattern in an earlier draft of this doc is the **old** style. The current
+shipped Haas post (r44241) defines every property as a single object —
+e.g. `properties.writeTools = {title: ..., description: ..., group:
+"formats", type: "boolean", value: true, scope: "post"};` — with zero uses
+of `propertyDefinitions` anywhere in the file. Use that shape:
 
-propertyDefinitions.gmwJob = {
-  title: "GMW Job", description: "Carbon jobReadableId (e.g. J000020)", type: "string"
+```js
+properties.gmwJob = {
+  title: "GMW Job", description: "Carbon jobReadableId (e.g. J000020)",
+  group: "gmw", type: "string", value: "", scope: "post"
 };
-propertyDefinitions.gmwOp = {
-  title: "GMW Operation", description: "Carbon operation id/seq (e.g. OP10)", type: "string"
+properties.gmwOp = {
+  title: "GMW Operation", description: "Carbon operation id/seq (e.g. OP10)",
+  group: "gmw", type: "string", value: "", scope: "post"
 };
-propertyDefinitions.gmwPart = {
-  title: "GMW Part/Item", description: "Part or item id", type: "string"
+properties.gmwPart = {
+  title: "GMW Part/Item", description: "Part or item id",
+  group: "gmw", type: "string", value: "", scope: "post"
 };
 ```
 
-`properties` / `propertyDefinitions` are the standard post-property
-mechanism used throughout every stock Fusion post — high confidence, no
-flag needed.
+Verified against the shipped post's own `properties.writeMachine` /
+`properties.writeTools` / `properties.useParametricFeed` definitions
+(`type: "boolean"` confirmed live; `"string"` is the same mechanism with
+the standard alternate type — every stock Autodesk post uses string-typed
+properties this way, e.g. program-name/post-name fields).
 
 ### Collecting tools and operation depths
 
 The whole toolpath plan is known before the first line of G-code is
 written, so this pulls tool + depth data with one pass over every section
-in `onOpen`, rather than accumulating incrementally in `onSection`. That
-sidesteps ordering questions about when each per-tool field first becomes
-available. Verify in Fusion that `getNumberOfSections()` / `getSection(i)`
-are safe to call from `onOpen` on this post version — they are in every
-standard Autodesk sample post, but confirm before relying on it here.
+in `onOpen`, rather than accumulating incrementally in `onSection`. This
+is not a guess: the shipped Haas post does exactly this. Its `onOpen`
+(line 987 of the post source) calls `writeProgramHeader()`, which loops
+`getNumberOfSections()` / `getSection(i)` and calls
+`section.getGlobalZRange()` per section to build a per-tool Z range for
+the `ZMIN=` field of its own tool-list comment — the identical pattern
+used here for `gmwCollectAll`.
 
 ```js
 var gmwTools = {};   // keyed by tool.number, deduped across operations
@@ -277,13 +322,14 @@ function gmwCollectAll() {
     var tool = section.getTool();
     if (!tool) { continue; }
 
-    // section.getGlobalZRange() -- reasonably well-attested in Autodesk
-    // sample posts for "what Z does this operation's motion span".
-    // VERIFY IN FUSION: confirm the Z frame of reference (this snippet
-    // assumes Z=0 is stock top per the CAM setup's WCS, i.e. minimum is
-    // negative and max_depth = -minimum). If this post's setups don't
-    // follow that convention, max_depth needs a different derivation
-    // (e.g. subtract the stock-top Z explicitly).
+    // section.getGlobalZRange() -- confirmed: Post Processor Reference
+    // (classSection.html) documents it, and the shipped Haas post calls
+    // it exactly like this in writeProgramHeader(). VERIFY IN FUSION:
+    // the reference only says the range is "in the global coordinate
+    // system" -- it does not say Z=0 is stock top. That's a property of
+    // this post's CAM setups, not of the kernel, so it genuinely can't
+    // be confirmed from documentation. If a setup's WCS doesn't put Z=0
+    // at stock top, max_depth needs a different derivation.
     var zRange = section.getGlobalZRange();
     var minZ = zRange ? zRange.getMinimum() : undefined;
 
@@ -291,51 +337,64 @@ function gmwCollectAll() {
     if (!gmwTools[key]) {
       gmwTools[key] = {
         t_number: tool.number,
-        // VERIFY IN FUSION: no confirmed accessor for the tool-library
-        // GUID from the live post Tool object. This is the same open
-        // question already on record in
-        // docs/PROGRAM_DELIVERY_AND_LIBRARY_SYNC_TODO.md section A.
-        // Leave "" if nothing pans out rather than guessing a property.
-        guid: (tool.guid !== undefined) ? tool.guid : "",
-        // VERIFY IN FUSION: tool.comment is well-attested as the
-        // human-readable text CAM posts already emit ("1/4 4FL Carbide
-        // EM" style). tool.description is NOT confirmed to exist on the
-        // live object -- try tool.comment first.
-        description: tool.comment || tool.description || "",
-        // getToolTypeName() is a helper commonly DEFINED BY THE POST
-        // ITSELF (not guaranteed to be a kernel builtin) to turn the
-        // tool.type enum into text. VERIFY IN FUSION that this post
-        // already defines it; if not, either add it or fall back to
-        // the raw enum value as done here.
-        type: (typeof getToolTypeName === "function") ? getToolTypeName(tool.type) : String(tool.type),
+        // Confirmed absent: the Tool class reference lists every public
+        // member (78 methods, 60 attributes) and none is a tool-library
+        // GUID accessor. getToolId() exists but is documented as the
+        // "internal (unique) id of the tool in a Fusion/Inventor
+        // document" -- a different id, not what
+        // PROGRAM_DELIVERY_AND_LIBRARY_SYNC_TODO.md section A needs.
+        // Zero use of any guid-like accessor in the shipped Haas post
+        // either. Left "" -- this is resolved, not unconfirmed.
+        guid: "",
+        // Confirmed: tool.description is used directly (not through a
+        // getter) in the shipped post's writeProgramHeader():
+        // `tool.description.toUpperCase()`, on a Tool returned by
+        // ToolTable.getTool() -- documented to return the same Tool
+        // class as section.getTool(). tool.comment is also a documented
+        // attribute (getComment()/comment both listed). Chain both.
+        description: tool.description || tool.comment || "",
+        // Confirmed: getToolTypeName() is a PostProcessor global method
+        // (documented on classPostProcessor.html, not post-local), and
+        // the shipped Haas post calls it exactly this way:
+        // `getToolTypeName(tool.type)` (the integer type, not the tool).
+        type: getToolTypeName(tool.type),
         diameter: tool.diameter,
-        // VERIFY IN FUSION: tool.fluteLength / tool.bodyLength are
-        // plausible from post-processor cookbook usage but not
-        // confirmed against this Fusion version's Tool object.
+        // Confirmed attributes on Tool (classTool.html): fluteLength,
+        // overallLength. NOTE: an earlier draft used tool.bodyLength for
+        // overall_length -- bodyLength ("the body length") and
+        // overallLength ("the entire length of the tool") are two
+        // different documented attributes; this was a bug, fixed here.
         flute_length: tool.fluteLength,
-        overall_length: tool.bodyLength,
-        // VERIFY IN FUSION: there is no single obviously-correct
-        // "stickout" property; posts that do holder-collision checking
-        // derive it from tool.holder geometry rather than reading it
-        // directly. tool.fluteLength is used here ONLY as a
-        // last-resort placeholder -- replace with the real derivation
-        // once confirmed (likely gaugeLength minus holder engagement).
-        stickout_length: tool.fluteLength,
-        // VERIFY IN FUSION: tool.holder as a sub-object (with its own
-        // .comment / .productId / geometry) was added to the post
-        // kernel at some point for holder-collision checking, but the
-        // exact property names on it are unconfirmed here.
-        holder_id: (tool.holder && tool.holder.productId) ? tool.holder.productId : "",
-        holder_description: (tool.holder && tool.holder.comment) ? tool.holder.comment : "",
+        overall_length: tool.overallLength,
+        // Confirmed: this is not a Tool property at all -- it's the
+        // exact reach the shipped Haas post itself computes for tool-
+        // length-compensation purposes, in its own getBodyLength(tool)
+        // helper: `section.getParameter("operation:tool_assemblyGaugeLength",
+        // tool.bodyLength + tool.holderLength)` for Fusion, falling back
+        // to `operation:tool_overallLength` for "legacy products". Reused
+        // verbatim (tool.holderLength is a confirmed Tool attribute).
+        stickout_length: section.getParameter("operation:tool_assemblyGaugeLength",
+          section.getParameter("operation:tool_overallLength", tool.bodyLength + tool.holderLength)),
+        // Confirmed: the Holder class itself (classHolder.html) has NO
+        // productId/comment/description/vendor -- only dimensional
+        // geometry (getMaximumDiameter, getTotalLength, getGaugeLength,
+        // per-section getDiameter/getLength). Those string fields live
+        // directly on Tool instead: getHolderProductId(),
+        // getHolderComment(), getHolderDescription() -- all confirmed
+        // Tool methods. No tool.holder.x sub-object access needed.
+        holder_id: tool.getHolderProductId() || "",
+        holder_description: tool.getHolderComment() || tool.getHolderDescription() || "",
         min_z: minZ,
         max_depth: (minZ !== undefined) ? -minZ : undefined,
-        // VERIFY IN FUSION: feed/speed per section is normally reached
-        // through section.getParameter(...) with a strategy-specific
-        // parameter name, not a flat tool property. tool.spindleRPM
-        // is a reasonable guess for speed; feed has no single stable
-        // property at all -- this is the weakest-attested field here.
-        feed: (typeof tool.feedCutting === "number") ? tool.feedCutting : undefined,
-        speed: (typeof tool.spindleRPM === "number") ? tool.spindleRPM : undefined
+        // Confirmed: tool.feedCutting does not exist anywhere in the Tool
+        // class reference or the shipped post. Real cutting feed is a
+        // per-section parameter, `operation:tool_feedCutting`, read via
+        // section.getParameter() throughout the shipped post's feed-
+        // context code (getFeed()/initializeParametricFeeds()).
+        // tool.spindleRPM is a confirmed Tool attribute (also
+        // getSpindleRPM()).
+        feed: section.getParameter("operation:tool_feedCutting", 0),
+        speed: tool.spindleRPM
       };
     } else if (minZ !== undefined) {
       // Reused tool -- widen the depth range across every operation.
@@ -346,37 +405,30 @@ function gmwCollectAll() {
     }
 
     gmwOps.push({
-      // VERIFY IN FUSION: "operation-comment" is the commonly-used
-      // parameter name for the operation's display name in Autodesk
-      // sample posts, accessed via section.hasParameter/getParameter.
-      name: section.hasParameter("operation-comment") ? section.getParameter("operation-comment") : "",
+      // Confirmed: "operation-comment" is used verbatim in the shipped
+      // post (`getParameter("operation-comment", "")`), and
+      // hasParameter/getParameter are documented Section methods.
+      name: section.getParameter("operation-comment", ""),
       tool: tool.number,
-      // VERIFY IN FUSION: work offset -> WCS number mapping.
-      // section.workOffset is commonly an integer (1=G54, 2=G55, ...);
-      // this assumes that exact numbering.
-      wcs: (typeof section.workOffset === "number" && section.workOffset > 0)
-        ? "G" + (53 + section.workOffset) : "",
-      // VERIFY IN FUSION: exact stock-to-leave parameter key varies by
-      // milling strategy (2D vs 3D vs adaptive) in real Fusion posts.
-      stock_to_leave: section.hasParameter("operation:stockToLeaveStock")
-        ? section.getParameter("operation:stockToLeaveStock") : 0
+      // Confirmed, and better than the earlier "G" + (53 + n) guess:
+      // section.wcs is itself a documented String attribute ("The WCS.")
+      // that already carries the formatted G-code word -- the shipped
+      // post writes it directly with `writeBlock(section.wcs)` in
+      // writeWCS(). No numbering formula needed at all.
+      wcs: section.wcs || "",
+      // Confirmed: the real parameter key is "operation:stockToLeave"
+      // (plus a separate "operation:verticalStockToLeave" for vertical
+      // passes), used throughout the shipped post's smoothing-level
+      // logic. The earlier draft's "operation:stockToLeaveStock" does
+      // not appear anywhere in the reference or the shipped post -- it
+      // was wrong.
+      stock_to_leave: section.getParameter("operation:stockToLeave", 0)
     });
   }
 }
 ```
 
-### `onOpen` — call the collector, write the header (SHA pending)
-
-The sha256 covers the body, which doesn't exist yet when `onOpen` runs, so
-the header is written with a placeholder and patched in `onClose` (below).
-There is no confirmed built-in `sha256()` in the post kernel's JS
-environment (it's a plain ECMAScript sandbox with no `crypto` module) —
-**verify in Fusion**, and if genuinely absent, a small pure-JS SHA-256
-implementation (no external dependency, straightforward bitwise ES5 code)
-has to be embedded directly in the `.cps` file. That implementation is not
-included here since it's mechanical, not something this change can verify
-against a real post kernel's JS dialect (ES5 vs. later) — confirm the
-kernel's JS support level in Fusion before writing it.
+### `onOpen` — call the collector, write the header
 
 ```js
 function onOpen() {
@@ -388,32 +440,84 @@ function onOpen() {
   writeComment("GMW-JOB " + properties.gmwJob + " " + properties.gmwOp);
   writeComment("GMW-PART " + properties.gmwPart);
   writeComment("GMW-POST HAAS-NGC V1.0.3");
-  // VERIFY IN FUSION: exact Date -> RFC3339 formatting helper. Plain JS
-  // Date exists in the kernel (used elsewhere for DATE/TIME comments in
-  // stock posts); toISOString() is standard ES5 and should be fine, but
-  // hasn't been run against this kernel.
+  // Date is a documented kernel class ("JavaScript date class" per
+  // classDate.html) and JSON.stringify is confirmed in active use in the
+  // shipped post (`JSON.parse(JSON.stringify(state))`), so this is a
+  // reasonably modern ES5+ environment; toISOString() is standard ES5.
+  // Medium-high confidence -- the one Date-specific method call that
+  // isn't independently attested by name in the shipped post's source.
   writeComment("GMW-POSTED " + new Date().toISOString());
   writeComment("GMW-TOOLS " + Object.keys(gmwTools).length);
+  // See the SHA-256 note below -- this is intentionally never patched to
+  // a real hash by the post.
   writeComment("GMW-SHA PENDING");
 }
 ```
 
-`writeComment` is the standard kernel function every stock post already
-uses for `( ... )` output — high confidence, no flag needed. Note it must
-already uppercase/sanitize per the post's `format` settings; if this post's
-`format.comment` allows lowercase or punctuation outside the safe set,
-tighten it so the header stays Haas-safe.
+`writeComment` is defined by the shipped Haas post itself (not a kernel
+builtin — confirmed by reading its definition at line 2061 of the post
+source), wrapping the kernel's `writeln`. It already uppercases and
+filters to a permitted character set via `formatComment()`/
+`settings.comments.permittedCommentChars` before output, so the header
+stays Haas-safe as long as this post's `settings.comments` block hasn't
+been narrowed below the field's `A-Z 0-9 . , : = + - _ /` character set —
+worth a quick glance at `settings.comments.permittedCommentChars` in
+Jason's post, but not a Fusion-runtime unknown.
 
-### `onClose` — write the sidecar, then patch the real SHA
+### SHA-256: moved to the daemon, not computed by the post
+
+The post kernel's JS sandbox has no hash primitive. This is not a "not
+found in the docs I happened to fetch" gap: the Post Processor Reference's
+full class index lists all 57 documented classes (`Array` through
+`ZipFile`, including `Base64` for base64 — but no `Hash`, `Crc`, `Md5`, or
+`Sha` class), and the shipped Haas post has zero uses of `sha`, `crc32`,
+`md5`, or `hash` anywhere in ~5,100 lines. There is no built-in to lean on
+and nothing to embed a fallback around.
+
+The original design also planned to read the finished NC file back with
+`TextFile` in `onClose`, hash the body, and patch the placeholder in
+place. That compounds the problem: `TextFile`'s documented surface is
+exactly `TextFile(path, write, encoding)`, `isOpen()`, `readln()`,
+`write()`, `writeln()`, `close()` — there is no `isEnd()`/EOF-detection
+method and no whole-file read. A `while (!reader.isEnd())` loop (as an
+earlier draft had) calls a method that doesn't exist. Looping `readln()`
+until it returns something falsy is not documented behavior either, so a
+read-back-and-patch design would be stacking two unconfirmed assumptions
+(a hash algorithm and a file-read-to-EOF idiom) rather than one.
+
+**Decision: move hashing to the daemon side**, per the tradeoff this task
+asked to make explicit:
+
+- The post writes `GMW-SHA PENDING` in the header (never patched) and
+  `"sha256": "PENDING"` in the sidecar (schema updated in §2 to allow this
+  — the field is no longer `required` and its pattern accepts `PENDING`
+  alongside a real digest).
+- `cnc.ParseIdentity` already computes the real sha256 of the body
+  independently in Go (`ComputedSHA256`, §4) — this doesn't depend on
+  anything the post writes, so nothing about Go's ability to detect
+  "same body, re-posted" is lost.
+- The cost: a human glancing at the raw `.nc` file can no longer eyeball
+  "was this re-posted unchanged" from the header alone — that check now
+  requires running preflight (`ComputedSHA256`/`SHAMatch`), not reading a
+  comment. If that visibility is ever worth restoring, the cleanest place
+  is Go, not the post: `LoadSidecar`/`ParseIdentity` already parses the
+  full byte content, so a future increment could have the daemon compute
+  the hash on ingest and rewrite the sidecar's `sha256` field (ordinary
+  Go file I/O, none of the `TextFile` EOF ambiguity above). That's future,
+  optional work, not part of this change, and doesn't touch the Go code
+  landed in PR #137.
 
 ```js
 function onClose() {
   // ... existing onClose body stays first, so the NC file is fully
   // written before we touch it ...
 
-  var ncPath = getOutputPath(); // VERIFY IN FUSION: exact accessor name/behavior
+  var ncPath = getOutputPath(); // confirmed PostProcessor global method
+                                 // (classPostProcessor.html), and used
+                                 // exactly this way (bare call) in the
+                                 // shipped post, e.g.
+                                 // FileSystem.getFolderPath(getOutputPath())
   gmwWriteSidecar(ncPath);
-  gmwPatchSha(ncPath);
 }
 
 function gmwWriteSidecar(ncPath) {
@@ -429,81 +533,47 @@ function gmwWriteSidecar(ncPath) {
     post_version: "1.0.3",
     posted_at: new Date().toISOString(),
     tool_count: toolList.length,
-    sha256: gmwLastComputedSha || "",
+    sha256: "PENDING", // see the SHA-256 note above
     tools: toolList,
     operations: gmwOps
   };
 
-  // TextFile + FileSystem are the standard kernel APIs stock posts use
-  // to emit an extra file alongside the NC output (setup sheets, tool
-  // lists in CSV, etc.) -- VERIFY IN FUSION the exact TextFile
-  // constructor signature (argument order/meaning for append-vs-
-  // overwrite, supported encoding names) against this Fusion version;
-  // it has varied across releases in ways this offline pass cannot
-  // confirm.
-  var file = new TextFile(ncPath + ".gmw.json", false, "utf-8");
+  // TextFile(path, write, encoding) confirmed on classTextFile.html.
+  // write=true means "open for writing" -- an earlier draft passed
+  // `false` here, which per that same signature opens for *reading* and
+  // would have silently produced an empty/unwritten sidecar. Fixed.
+  var file = new TextFile(ncPath + ".gmw.json", true, "utf-8");
   file.write(JSON.stringify(sidecar, null, 2));
   file.close();
-}
-
-function gmwPatchSha(ncPath) {
-  // Re-read the completed file, split header from body at the first
-  // line that isn't a GMW- comment (mirrors cnc.ParseIdentity's rule),
-  // hash the body, and replace the PENDING placeholder in place.
-  //
-  // VERIFY IN FUSION: TextFile read-mode signature and whether it
-  // exposes a "read whole file" convenience or requires a per-line
-  // read loop.
-  var reader = new TextFile(ncPath, true, "utf-8");
-  var lines = [];
-  while (!reader.isEnd()) { lines.push(reader.readln()); }
-  reader.close();
-
-  var bodyStart = 0;
-  while (bodyStart < lines.length && /^\(GMW-/i.test(lines[bodyStart])) {
-    bodyStart++;
-  }
-  var body = lines.slice(bodyStart).join("\n");
-  var sha = gmwSha256Hex(body).toUpperCase(); // pure-JS impl -- see note above
-
-  for (var i = 0; i < bodyStart; ++i) {
-    if (/^\(GMW-SHA /i.test(lines[i])) {
-      lines[i] = "(GMW-SHA " + sha + ")";
-    }
-  }
-
-  var writer = new TextFile(ncPath, false, "utf-8");
-  writer.write(lines.join("\n"));
-  writer.close();
 }
 ```
 
 ### Verify-in-Fusion checklist
 
-Everything in this table must be confirmed against a real Fusion post
-session (the post editor's debugger, or a `writeln`/console dump during a
-test post) before this is trusted on a production job. None of it could be
-executed or confirmed from this repo.
+Down to the items that genuinely can't be resolved from documentation or
+the shipped post source alone — everything else above is confirmed
+against one or both.
 
-| API / assumption | Where used | Confidence |
+| API / assumption | Where used | Status |
 |---|---|---|
-| `getNumberOfSections()` / `getSection(i)` callable from `onOpen` | `gmwCollectAll` | Medium-high — standard in Autodesk sample posts |
-| `section.getTool()` | `gmwCollectAll` | High — ubiquitous |
-| `section.getGlobalZRange()` + its Z frame of reference | depth/`max_depth` | Medium — function likely real; sign/frame convention unverified |
-| `tool.guid` | sidecar `guid` | **Unconfirmed** — same open question as `PROGRAM_DELIVERY_AND_LIBRARY_SYNC_TODO.md` §A |
-| `tool.comment` / `tool.description` | sidecar `description` | Medium (`comment`) / low (`description`) |
-| `getToolTypeName()` | sidecar `type` | Low — usually post-local, not a kernel builtin |
-| `tool.fluteLength` / `tool.bodyLength` | flute/overall length | Medium — plausible, unconfirmed on this Fusion version |
-| stickout-length derivation | `stickout_length` | **Unconfirmed** — placeholder only, needs a real holder-geometry derivation |
-| `tool.holder.productId` / `tool.holder.comment` | holder id/description | Low |
-| `tool.feedCutting` / `tool.spindleRPM` | feed/speed | Low — feed in particular has no single stable property |
-| `section.hasParameter("operation-comment")` | operation name | Medium — common in sample posts |
-| `section.workOffset` → `"G" + (53 + n)` mapping | `wcs` | Medium — standard Haas numbering, mapping itself unconfirmed |
-| `section.getParameter("operation:stockToLeaveStock")` | `stock_to_leave` | Low — varies by strategy |
-| SHA-256 availability in the post kernel's JS | `GMW-SHA` | **Unconfirmed** — likely needs an embedded pure-JS implementation |
-| `new Date().toISOString()` | `GMW-POSTED` | Medium-high — plain ES5, `Date` itself is known to work in this kernel |
-| `getOutputPath()` | sidecar/patch file path | Medium — common name, unconfirmed on this post |
-| `TextFile` constructor signature + `FileSystem` helpers | sidecar write, SHA patch | Medium — pattern is real and commonly used for setup sheets; exact signature unconfirmed |
+| Z=0-is-stock-top convention for `section.getGlobalZRange()` | `max_depth` sign flip | **Verify in Fusion** — a property of each CAM setup's WCS, not of the kernel; confirm before trusting `max_depth = -min_z` |
+| `new Date().toISOString()` | `GMW-POSTED` | Medium-high — `Date` is a documented kernel class and `JSON.stringify` is confirmed live in the shipped post, but `toISOString()` itself isn't independently attested by name in that source |
+| `settings.comments.permittedCommentChars` in Jason's specific post build | Haas-safe header chars | Worth a one-line glance at his post's `settings.comments` block; not a kernel unknown, just a per-post config check |
+
+Everything else in this section — `getNumberOfSections()`/`getSection(i)`
+from `onOpen`, `section.getTool()`, `section.getGlobalZRange()` itself,
+`tool.description`/`tool.comment`, `getToolTypeName()`,
+`tool.fluteLength`/`tool.overallLength`/`tool.holderLength`, the
+`operation:tool_assemblyGaugeLength`/`operation:tool_overallLength`
+stickout derivation, `tool.getHolderProductId()`/`getHolderComment()`/
+`getHolderDescription()`, `operation:tool_feedCutting`, `tool.spindleRPM`,
+`operation-comment`, `section.wcs`, `operation:stockToLeave`,
+`getOutputPath()`, and the `TextFile`/`FileSystem` signatures — is
+confirmed either directly in the Post Processor Reference, by verbatim
+use in the shipped Haas Next Generation post source, or both. `tool.guid`
+and in-kernel SHA-256 are confirmed **absent** rather than unconfirmed
+(see the notes above and in §2), which is why they're resolved rather
+than listed here as open.
 
 ## 4. Go: parsing, sidecar loading, reconciliation
 
