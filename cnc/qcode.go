@@ -220,6 +220,7 @@ func validateResponseShape(qCode int, macroVar *int, value string) error {
 		if strings.Contains(upper, "PROGRAM") ||
 			strings.Contains(upper, "MACRO") ||
 			strings.Contains(upper, "PARTS") ||
+			strings.Contains(upper, "M30 #") ||
 			strings.Contains(upper, "LAST CYCLE") ||
 			strings.Contains(upper, "TOOL") {
 			return fmt.Errorf("Q104 (mode) got cross-talk frame: %q", value)
@@ -233,8 +234,11 @@ func validateResponseShape(qCode int, macroVar *int, value string) error {
 			return fmt.Errorf("Q303 expected LAST CYCLE prefix, got %q", value)
 		}
 	case 402:
-		if !strings.Contains(upper, "PARTS") {
-			return fmt.Errorf("Q402 expected PARTS prefix, got %q", value)
+		// Classic control answers "PARTS, N"; NGC (TM-2P, verified
+		// 2026-09-18) answers "M30 #1, N" — the M30 counter the
+		// parts count lives behind. Either is the real thing.
+		if !strings.Contains(upper, "PARTS") && !strings.Contains(upper, "M30 #") {
+			return fmt.Errorf("Q402 expected PARTS or M30 # prefix, got %q", value)
 		}
 	case 500:
 		if !strings.Contains(upper, "PROGRAM") {
