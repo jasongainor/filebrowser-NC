@@ -66,6 +66,15 @@ type Cnc struct {
 	// 0 uses cnc.defaultBaselineInterval (15s).
 	BaselinePollSeconds int `json:"baselinePollSeconds,omitempty"`
 
+	// ToolTableRefreshMinutes is how often cncd re-reads each
+	// machine's tool table from the controller and persists it, so
+	// the e-ink display (and anything else reading
+	// GET /api/cnc/tool-table) never shows a table older than this.
+	// 0 (the key absent) uses DefaultToolTableRefreshMinutes; any
+	// negative value turns the refresher off entirely. See
+	// ToolTableRefreshInterval and cncd.RunToolTableRefresher.
+	ToolTableRefreshMinutes int `json:"toolTableRefreshMinutes,omitempty"`
+
 	// Reporting sends program-run lifecycle data (open / parts / alarm /
 	// close) to gmw-mes so machine time reaches Carbon. See
 	// cnc/reporter.go and docs/RUN_REPORTING.md. Off (fully a no-op)
@@ -526,6 +535,22 @@ func (m Machine) EffectivePositionTolerance() float64 {
 // today. Other brands round-trip through settings but no protocol code
 // reads them yet.
 const MachineBrandHaas = "haas"
+
+// DefaultToolTableRefreshMinutes is the scheduled tool-table read
+// cadence when Cnc.ToolTableRefreshMinutes is unset.
+const DefaultToolTableRefreshMinutes = 30
+
+// ToolTableRefreshInterval resolves ToolTableRefreshMinutes: 0 means
+// the default, a negative value disables the refresher (ok=false).
+func (c Cnc) ToolTableRefreshInterval() (d time.Duration, ok bool) {
+	switch {
+	case c.ToolTableRefreshMinutes < 0:
+		return 0, false
+	case c.ToolTableRefreshMinutes == 0:
+		return DefaultToolTableRefreshMinutes * time.Minute, true
+	}
+	return time.Duration(c.ToolTableRefreshMinutes) * time.Minute, true
+}
 
 // DefaultToolSlots is the fallback magazine size when a machine's
 // ToolSlots is 0. 30 covers most older Haas mills; operators with
