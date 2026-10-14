@@ -88,6 +88,13 @@ func main() {
 		go cncd.RunAutoBucketWatcher(ctx, deps, 0)
 	}
 
+	// Scheduled tool-table read so the e-ink display's table stays
+	// current without anyone running the POST. Default every 30
+	// minutes; a negative toolTableRefreshMinutes turns it off.
+	if cncd.ShouldRefreshToolTable(deps) {
+		go cncd.RunToolTableRefresher(ctx, deps, 0)
+	}
+
 	go func() {
 		log.Printf("cncd: serving %s on %s", *root, *listen)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
