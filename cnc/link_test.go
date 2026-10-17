@@ -24,6 +24,9 @@ type fakeBridge struct {
 	accepts  int
 	queries  []string
 	closeNow bool // when set, drop the connection right after the next reply
+	// lateFirst: answer the first query with an empty frame and send its
+	// real reply 100 ms later, as the TM-2P did at 00:21:36 on 2026-10-17.
+	lateFirst bool
 }
 
 func newFakeBridge(t *testing.T) *fakeBridge {
@@ -66,8 +69,15 @@ func (b *fakeBridge) handle(conn net.Conn) {
 		b.mu.Lock()
 		b.queries = append(b.queries, q)
 		drop := b.closeNow
+		late := b.lateFirst && len(b.queries) == 1
 		b.mu.Unlock()
 
+		if late {
+			if _, err := conn.Write([]byte("\x02\x17\r\n>")); err != nil {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 		if _, err := conn.Write([]byte(replyFor(q))); err != nil {
 			return
 		}
@@ -545,5 +555,25 @@ func TestLink_SilentControllerDoesNotChurnConnections(t *testing.T) {
 	}
 	if !l.State().Up {
 		t.Fatal("link should still report Up — the socket is fine, the mill is not")
+	}
+}
+
+// A late reply must not answer the next query: after the empty frame the
+// Link resyncs, so the following queries get their own replies.
+func TestLink_LateReplyDoesNotShiftLaterQueries(t *testing.T) {
+	b := newFakeBridge(t)
+	b.mu.Lock()
+	b.lateFirst = true
+	b.mu.Unlock()
+	l := startLink(t, b)
+	ctx := context.Background()
+	if res, _ := l.Query(ctx, 500, nil); res != nil && res.OK {
+		t.Fatalf("first query should fail on the empty frame: %+v", res)
+	}
+	for i := 0; i < 3; i++ {
+		res, err := l.Query(ctx, 104, nil)
+		if err != nil || res == nil || !res.OK || res.Value != "MEM" {
+			t.Fatalf("query %d after the late reply: %+v %v", i, res, err)
+		}
 	}
 }
