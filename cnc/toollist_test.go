@@ -53,8 +53,29 @@ func TestBuildToolListPocketCarouselMapping(t *testing.T) {
 	if out.LastUpdated.IsZero() {
 		t.Fatal("last_updated should be set from table")
 	}
-	if out.LastUpdatedDisplay != "2026-06-03 14:22" {
+	// 14:22 UTC is 10:22 in New York (EDT, UTC-4); the stored time stays UTC.
+	if out.LastUpdatedDisplay != "2026-06-03 10:22" {
 		t.Fatalf("display ts wrong: %q", out.LastUpdatedDisplay)
+	}
+	if out.LastUpdated.Location() != time.UTC {
+		t.Fatalf("stored time must stay UTC, got %v", out.LastUpdated.Location())
+	}
+}
+
+func TestDisplayTimeNewYork(t *testing.T) {
+	cases := []struct {
+		in   time.Time
+		want string
+	}{
+		{time.Date(2026, 10, 17, 1, 20, 31, 0, time.UTC), "2026-10-16 21:20"}, // EDT, previous evening
+		{time.Date(2026, 12, 25, 17, 5, 0, 0, time.UTC), "2026-12-25 12:05"},  // EST
+		{time.Date(2026, 3, 8, 6, 59, 0, 0, time.UTC), "2026-03-08 01:59"},    // just before spring-forward
+		{time.Date(2026, 3, 8, 7, 0, 0, 0, time.UTC), "2026-03-08 03:00"},     // 02:00 EST jumps to 03:00 EDT
+	}
+	for _, c := range cases {
+		if got := DisplayTime(c.in); got != c.want {
+			t.Errorf("DisplayTime(%v) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -134,7 +155,7 @@ func TestBuildToolListJSONShapeMatchesContract(t *testing.T) {
 		`"machine":{"id":"vf2"`,
 		`"connected":true`,
 		`"last_updated":"2026-06-03T14:22:10Z"`,
-		`"last_updated_display":"2026-06-03 14:22"`,
+		`"last_updated_display":"2026-06-03 10:22"`,
 		`"units":"in"`,
 		`"pockets":[`,
 		`"library":[`,

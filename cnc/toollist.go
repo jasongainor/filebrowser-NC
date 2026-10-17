@@ -108,7 +108,7 @@ func BuildToolList(
 			byNum[s.Slot] = s
 		}
 		out.LastUpdated = table.ReadAt
-		out.LastUpdatedDisplay = table.ReadAt.UTC().Format("2006-01-02 15:04")
+		out.LastUpdatedDisplay = DisplayTime(table.ReadAt)
 	}
 
 	// Pockets pass — always pocketCount rows, in slot order. Carousel

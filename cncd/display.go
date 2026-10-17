@@ -18,6 +18,8 @@ import (
 // (cncapi.Deps.BuildMachineToolList) is shared verbatim with
 // filebrowser's version — this handler only owns the token gate and
 // response envelope, which differ per host (no *users.User here).
+// "setup" is the loaded-program setup sheet (setup_sheet.go); it is
+// additive, so older firmware ignores it.
 func (d Deps) displayFetchHandler(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	if id == "" {
@@ -63,6 +65,7 @@ func (d Deps) displayFetchHandler(w http.ResponseWriter, r *http.Request) {
 	body := map[string]any{
 		"config": resolved,
 		"data":   payload,
+		"setup":  d.Setup.Sheet(disp.MachineID),
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	_ = renderJSON(w, body)

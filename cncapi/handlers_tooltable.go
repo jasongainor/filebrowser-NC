@@ -123,7 +123,7 @@ func (d Deps) ToolTableHistory(machineID, shareRelRoot string) (ToolTableHistory
 
 	out := make([]ToolTableHistoryEntry, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || e.Name() == cnc.ManifestFileName {
 			continue
 		}
 		info, err := e.Info()

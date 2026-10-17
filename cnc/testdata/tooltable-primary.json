@@ -1,0 +1,211 @@
+{
+  "machine_id": "primary",
+  "machine_name": "Haas TM-2P",
+  "bridge_address": ":4196",
+  "read_at": "2026-10-17T01:20:31.881034976Z",
+  "duration_ms": 14346.295,
+  "slots_requested": 20,
+  "slots_read": 20,
+  "slots": [
+    {
+      "slot": 1,
+      "length_geom": 4.0057,
+      "length_wear": 0,
+      "diameter_geom": 3.3371,
+      "diameter_wear": 0,
+      "effective_diameter": 3.3371,
+      "effective_length": 4.0057,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 2,
+      "length_geom": 3.4172,
+      "length_wear": 0,
+      "diameter_geom": 1.0022,
+      "diameter_wear": 0,
+      "effective_diameter": 1.0022,
+      "effective_length": 3.4172,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 3,
+      "length_geom": 4.8743,
+      "length_wear": 0,
+      "diameter_geom": 0.2504,
+      "diameter_wear": 0,
+      "effective_diameter": 0.2504,
+      "effective_length": 4.8743,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 4,
+      "length_geom": 4.4329,
+      "length_wear": 0,
+      "diameter_geom": 0.3749,
+      "diameter_wear": 0,
+      "effective_diameter": 0.3749,
+      "effective_length": 4.4329,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 5,
+      "length_geom": 5.6377,
+      "length_wear": 0,
+      "diameter_geom": 0.5006,
+      "diameter_wear": 0,
+      "effective_diameter": 0.5006,
+      "effective_length": 5.6377,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 6,
+      "length_geom": 4.2317,
+      "length_wear": 0,
+      "diameter_geom": 0.5017,
+      "diameter_wear": 0,
+      "effective_diameter": 0.5017,
+      "effective_length": 4.2317,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 7,
+      "length_geom": 4.2527,
+      "length_wear": 0,
+      "diameter_geom": 0.0604,
+      "diameter_wear": 0,
+      "effective_diameter": 0.0604,
+      "effective_length": 4.2527,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 8,
+      "length_geom": 3.9488,
+      "length_wear": 0,
+      "diameter_geom": 0.0936,
+      "diameter_wear": 0,
+      "effective_diameter": 0.0936,
+      "effective_length": 3.9488,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 9,
+      "length_geom": 3.9272,
+      "length_wear": 0,
+      "diameter_geom": 0.0905,
+      "diameter_wear": 0,
+      "effective_diameter": 0.0905,
+      "effective_length": 3.9272,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 10,
+      "length_geom": 4.114,
+      "length_wear": 0,
+      "diameter_geom": 0.1259,
+      "diameter_wear": 0,
+      "effective_diameter": 0.1259,
+      "effective_length": 4.114,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 11,
+      "length_geom": 5.0279,
+      "length_wear": 0,
+      "diameter_geom": 0.1548,
+      "diameter_wear": 0,
+      "effective_diameter": 0.1548,
+      "effective_length": 5.0279,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 12,
+      "length_geom": 4.9275,
+      "length_wear": 0,
+      "diameter_geom": 0.5376,
+      "diameter_wear": 0,
+      "effective_diameter": 0.5376,
+      "effective_length": 4.9275,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 13,
+      "length_geom": 4.6216,
+      "length_wear": 0,
+      "diameter_geom": 0.3756,
+      "diameter_wear": 0,
+      "effective_diameter": 0.3756,
+      "effective_length": 4.6216,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 14,
+      "length_geom": 3.6889,
+      "length_wear": 0,
+      "diameter_geom": 0.3772,
+      "diameter_wear": 0,
+      "effective_diameter": 0.3772,
+      "effective_length": 3.6889,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 15,
+      "length_geom": 8.4096,
+      "length_wear": 0,
+      "diameter_geom": 0.3758,
+      "diameter_wear": 0,
+      "effective_diameter": 0.3758,
+      "effective_length": 8.4096,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 16,
+      "length_geom": 5.1088,
+      "length_wear": 0,
+      "diameter_geom": 0.2517,
+      "diameter_wear": 0,
+      "effective_diameter": 0.2517,
+      "effective_length": 5.1088,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 17,
+      "length_geom": 5.3902,
+      "length_wear": 0,
+      "diameter_geom": 0.3152,
+      "diameter_wear": 0,
+      "effective_diameter": 0.3152,
+      "effective_length": 5.3902,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 18,
+      "length_geom": 3.4254,
+      "length_wear": 0,
+      "diameter_geom": 0.1604,
+      "diameter_wear": 0,
+      "effective_diameter": 0.1604,
+      "effective_length": 3.4254,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 19,
+      "length_geom": 8,
+      "length_wear": 0,
+      "diameter_geom": 0,
+      "diameter_wear": 0,
+      "effective_diameter": 0,
+      "effective_length": 8,
+      "edited_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "slot": 20,
+      "length_geom": 5.4395,
+      "length_wear": 0,
+      "diameter_geom": 0,
+      "diameter_wear": 0,
+      "effective_diameter": 0,
+      "effective_length": 5.4395,
+      "edited_at": "0001-01-01T00:00:00Z"
+    }
+  ]
+}
