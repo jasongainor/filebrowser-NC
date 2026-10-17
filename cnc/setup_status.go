@@ -209,12 +209,7 @@ func PocketStatus(t CardTool, geom *PocketGeom, rec *ManifestEntry) string {
 		return StatusEmpty
 	}
 	if UsesDiameter(t) {
-		d, ok := geom.Diameter()
-		tol := DiameterTol
-		if isFace(t) {
-			tol = FaceTolFraction * t.Diameter
-		}
-		if !ok || math.Abs(d-t.Diameter) > tol {
+		if DiameterOff(t, geom) {
 			if fixed {
 				return StatusError
 			}
@@ -253,18 +248,38 @@ func RecordStale(t CardTool, length float64, rec *ManifestEntry) bool {
 	return rec != nil && math.Abs(length-rec.LengthGeom) > LengthTol
 }
 
-// TouchedOff reports whether a floating pocket shows a new non-zero length
-// now than it did (before) when it was first flagged: the operator touched
-// it off.
+// DiameterOff reports whether a milling tool's machine diameter (geometry +
+// wear) is missing or outside tolerance of the program's: .012, face mills
+// 15 percent.
+func DiameterOff(t CardTool, geom *PocketGeom) bool {
+	if !UsesDiameter(t) || geom == nil {
+		return false
+	}
+	d, ok := geom.Diameter()
+	tol := DiameterTol
+	if isFace(t) {
+		tol = FaceTolFraction * t.Diameter
+	}
+	return !ok || math.Abs(d-t.Diameter) > tol
+}
+
+// TouchedOff reports whether a floating pocket's offsets changed since
+// (before) it was first flagged: a new non-zero length, or a new diameter
+// geometry. Any offset change is the operator setting the tool up (Jason:
+// a re-touch can land on the same length).
 func TouchedOff(t CardTool, now, before PocketGeom) bool {
 	l, ok := now.Length()
 	if !ok || l == 0 {
 		return false
 	}
-	if b, ok := before.Length(); ok && math.Abs(l-b) <= touchedEpsilon {
-		return false
+	if b, ok := before.Length(); !ok || math.Abs(l-b) > touchedEpsilon {
+		return true
 	}
-	return true
+	if now.DiameterGeom != nil && before.DiameterGeom != nil &&
+		math.Abs(*now.DiameterGeom-*before.DiameterGeom) > touchedEpsilon {
+		return true
+	}
+	return false
 }
 
 // RecordFor is the manifest entry written when t is touched off at length.

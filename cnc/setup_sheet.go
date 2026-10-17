@@ -86,7 +86,7 @@ func BuildSetupSheet(program string, cards *Cards, geom func(pocket int) *Pocket
 			st.WearDiameter = wearText(g.DiameterWear)
 		}
 		if st.Status != StatusOK {
-			if UsesDiameter(t) {
+			if DiameterOff(t, geom(t.Number)) {
 				st.ExpectedDiameter = fmt.Sprintf("%.4f", t.Diameter)
 			}
 			if r := rec(t.Number); r != nil && r.Same(IdentityOf(t)) {
