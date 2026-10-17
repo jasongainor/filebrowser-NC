@@ -71,6 +71,9 @@ func (d Deps) displayFetchHandler(w http.ResponseWriter, r *http.Request) {
 			payload.LastUpdatedDisplay = cnc.DisplayTime(at)
 		}
 	}
+	if sheet.State == cnc.SheetReady {
+		sheet.QR = d.setupQR(sheet.Program, r.Host)
+	}
 	body := map[string]any{
 		"config": resolved,
 		"data":   payload,
