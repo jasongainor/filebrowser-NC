@@ -27,11 +27,19 @@ type SetupTool struct {
 	Description string `json:"description,omitempty"`
 	Holder      string `json:"holder,omitempty"`
 	Diameter    string `json:"diameter,omitempty"` // inches, 4 places; mills only
-	// The machine's offsets for the pocket, inches to 4 places: length
-	// geometry and diameter (geometry + wear). Empty when not read.
-	OffsetLength   string     `json:"offset_length,omitempty"`
-	OffsetDiameter string     `json:"offset_diameter,omitempty"`
-	Shape          *ToolShape `json:"shape,omitempty"`
+	// The machine's geometry offsets for the pocket, inches to 4 places.
+	// Empty when not read.
+	OffsetLength   string `json:"offset_length,omitempty"`
+	OffsetDiameter string `json:"offset_diameter,omitempty"`
+	// On a row that is not ok, what the program expects: the diameter for
+	// mills (drill/tap diameters never count) and the recorded length when
+	// the record is this tool. Empty when not known.
+	ExpectedLength   string `json:"expected_length,omitempty"`
+	ExpectedDiameter string `json:"expected_diameter,omitempty"`
+	// Non-zero wear offsets, signed, 4 places; the display warns WEAR.
+	WearLength   string     `json:"wear_length,omitempty"`
+	WearDiameter string     `json:"wear_diameter,omitempty"`
+	Shape        *ToolShape `json:"shape,omitempty"`
 }
 
 // SetupSheet is the payload. Tools are in run order, each pocket once.
@@ -71,8 +79,18 @@ func BuildSetupSheet(program string, cards *Cards, geom func(pocket int) *Pocket
 			if l, ok := g.Length(); ok {
 				st.OffsetLength = fmt.Sprintf("%.4f", l)
 			}
-			if d, ok := g.Diameter(); ok {
-				st.OffsetDiameter = fmt.Sprintf("%.4f", d)
+			if g.DiameterGeom != nil {
+				st.OffsetDiameter = fmt.Sprintf("%.4f", *g.DiameterGeom)
+			}
+			st.WearLength = wearText(g.LengthWear)
+			st.WearDiameter = wearText(g.DiameterWear)
+		}
+		if st.Status != StatusOK {
+			if UsesDiameter(t) {
+				st.ExpectedDiameter = fmt.Sprintf("%.4f", t.Diameter)
+			}
+			if r := rec(t.Number); r != nil && r.Same(IdentityOf(t)) {
+				st.ExpectedLength = fmt.Sprintf("%.4f", r.LengthGeom)
 			}
 		}
 		s.Tools = append(s.Tools, st)
@@ -134,3 +152,11 @@ func asciiOnly(s string) string {
 
 func lower(s string) string  { return strings.ToLower(s) }
 func has(s, sub string) bool { return strings.Contains(s, sub) }
+
+// wearText is a non-zero wear offset as "+0.0012"; "" when zero or unread.
+func wearText(w *float64) string {
+	if w == nil || math.Abs(*w) < 0.00005 {
+		return ""
+	}
+	return fmt.Sprintf("%+.4f", *w)
+}

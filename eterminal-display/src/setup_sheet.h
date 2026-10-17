@@ -51,9 +51,43 @@ bool setupNoJson() {
   return strcmp(st, "nojson") == 0;
 }
 
-int sheetRows() {
-  int n = (cfg.res_y - SHEET_ROWS_TOP - 6) / SHEET_ROW_H;
-  return n < 1 ? 1 : n;
+// Extra 16 px lines under a list row: "want" (not ok, something expected
+// is known) and "WEAR" (a wear offset is not zero).
+constexpr int SHEET_SUB_H = 16;
+inline bool rowHasWant(JsonObjectConst t) {
+  const char *l = t["expected_length"] | "";
+  const char *d = t["expected_diameter"] | "";
+  return !statusIsOk(t) && (l[0] || d[0]);
+}
+inline bool rowHasWear(JsonObjectConst t) {
+  const char *l = t["wear_length"] | "";
+  const char *d = t["wear_diameter"] | "";
+  return l[0] || d[0];
+}
+inline int rowHeight(JsonObjectConst t) {
+  return SHEET_ROW_H + SHEET_SUB_H * ((rowHasWant(t) ? 1 : 0) + (rowHasWear(t) ? 1 : 0));
+}
+
+// Pack rows (only the not-ok ones when onlyBad) into pages by height.
+void packSheetPages(char kind, bool onlyBad, JsonArrayConst tools) {
+  int avail = cfg.res_y - SHEET_ROWS_TOP - 6;
+  int pg = 0, first = 0, count = 0, used = 0, seen = 0;
+  int n = tools.isNull() ? 0 : (int) tools.size();
+  for (int i = 0; i < n; i++) {
+    JsonObjectConst t = tools[i].as<JsonObjectConst>();
+    if (onlyBad && statusIsOk(t)) continue;
+    int h = rowHeight(t);
+    if (count > 0 && used + h > avail) {
+      sheet_pages.push_back({kind, pg++, first, count});
+      first = seen;
+      count = 0;
+      used = 0;
+    }
+    used += h;
+    count++;
+    seen++;
+  }
+  if (count > 0 || (!onlyBad && pg == 0)) sheet_pages.push_back({kind, pg, first, count});
 }
 
 int sheetTotalPages() {
@@ -64,20 +98,8 @@ void buildSheetPages() {
   sheet_pages.clear();
   JsonArrayConst tools = payload_doc["setup"]["tools"];
   int n = tools.isNull() ? 0 : (int) tools.size();
-  int per = sheetRows();
-
-  int bad = 0;
-  for (int i = 0; i < n; i++)
-    if (!statusIsOk(tools[i].as<JsonObjectConst>())) bad++;
-  for (int start = 0, pg = 0; start < bad; start += per, pg++)
-    sheet_pages.push_back({'I', pg, start, min(per, bad - start)});
-
-  int pg = 0;
-  int start = 0;
-  do {
-    sheet_pages.push_back({'L', pg++, start, min(per, n - start)});
-    start += per;
-  } while (start < n);
+  packSheetPages('I', true, tools);
+  packSheetPages('L', false, tools);
 
   for (int i = 0; i < n; i++) {
     int pocket = tools[i]["pocket"] | 0;
@@ -191,7 +213,7 @@ void renderSheetList(const SheetPage &p) {
   if (title[0]) head += "  " + String(title);
   // Column heads over the offsets, right of the title.
   const int status_w = 76;
-  const int dia_w = 70, len_w = 80;
+  const int dia_w = 80, len_w = 80;
   int dia_x = cfg.res_x - margin - status_w - dia_w;
   int len_x = dia_x - len_w;
   display.setCursor(margin, 50 + 4 + 16);
@@ -210,6 +232,7 @@ void renderSheetList(const SheetPage &p) {
 
   int seen = 0;      // rows passed that count for this page kind
   int drawn = 0;
+  int y = SHEET_ROWS_TOP;
   for (JsonVariantConst v : tools) {
     JsonObjectConst t = v.as<JsonObjectConst>();
     bool ok = statusIsOk(t);
@@ -217,7 +240,7 @@ void renderSheetList(const SheetPage &p) {
     if (seen++ < p.first) continue;
     if (drawn >= p.count) break;
 
-    int y = SHEET_ROWS_TOP + drawn * SHEET_ROW_H;
+    int row_h = rowHeight(t);
     char pocket[8];
     snprintf(pocket, sizeof pocket, "T%d", (int) (t["pocket"] | 0));
     display.setFont(&FreeMonoBold12pt7b);
@@ -235,10 +258,38 @@ void renderSheetList(const SheetPage &p) {
     display.setCursor(dia_x, y + 22);
     display.print((const char *) (t["offset_diameter"] | "-"));
 
+    bool wear = rowHasWear(t);
+    int sub_y = y + 24;
+    if (rowHasWant(t)) {
+      sub_y += SHEET_SUB_H;
+      display.setFont(&FreeMono9pt7b);
+      display.setCursor(margin + 56, sub_y);
+      display.print("want");
+      display.setCursor(len_x, sub_y);
+      display.print((const char *) (t["expected_length"] | ""));
+      display.setCursor(dia_x, sub_y);
+      display.print((const char *) (t["expected_diameter"] | ""));
+    }
+    if (wear) {
+      sub_y += SHEET_SUB_H;
+      display.setFont(&FreeMonoBold9pt7b);
+      display.setCursor(margin + 56, sub_y);
+      display.print("WEAR");
+      display.setFont(&FreeMono9pt7b);
+      const char *wl = t["wear_length"] | "";
+      const char *wd = t["wear_diameter"] | "";
+      display.setCursor(len_x, sub_y);
+      display.print(wl[0] ? wl : "0");
+      display.setCursor(dia_x, sub_y);
+      display.print(wd[0] ? wd : "0");
+    }
+
     int sx = cfg.res_x - margin - status_w;
-    if (ok) drawCheck(sx + status_w - SHEET_ROW_H, y, SHEET_ROW_H, SHEET_ROW_H);
-    else drawStatusSmall(t["status"] | "", sx, y + 3, status_w, SHEET_ROW_H - 6);
-    display.drawLine(margin, y + SHEET_ROW_H - 1, cfg.res_x - margin, y + SHEET_ROW_H - 1, GxEPD_BLACK);
+    if (!ok) drawStatusSmall(t["status"] | "", sx, y + 3, status_w, SHEET_ROW_H - 6);
+    else if (wear) drawStatusSmall("WEAR", sx, y + 3, status_w, SHEET_ROW_H - 6);
+    else drawCheck(sx + status_w - SHEET_ROW_H, y, SHEET_ROW_H, SHEET_ROW_H);
+    display.drawLine(margin, y + row_h - 1, cfg.res_x - margin, y + row_h - 1, GxEPD_BLACK);
+    y += row_h;
     drawn++;
   }
 }

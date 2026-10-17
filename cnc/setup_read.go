@@ -51,8 +51,8 @@ func LoadedProgramVia(ctx context.Context, query func(context.Context, int, *int
 	return fmt.Sprintf("O%d", int(n)), nil
 }
 
-// ReadToolSlots reads length-geom, diameter-geom and diameter-wear for just
-// the listed pockets (3 Q600 each) instead of the whole table.
+// ReadToolSlots reads length and diameter, geometry and wear, for just the
+// listed pockets (4 Q600 each) instead of the whole table.
 func (s *Streamer) ReadToolSlots(ctx context.Context, pockets []int) ([]ToolTableSlot, error) {
 	return ReadSlotsVia(ctx, s.Query, pockets)
 }
@@ -62,7 +62,7 @@ func ReadSlotsVia(ctx context.Context, query func(context.Context, int, *int) (*
 	out := make([]ToolTableSlot, 0, len(pockets))
 	for _, p := range pockets {
 		row := ToolTableSlot{Slot: p}
-		for _, key := range [...]string{"length_geom", "diameter_geom", "diameter_wear"} {
+		for _, key := range [...]string{"length_geom", "length_wear", "diameter_geom", "diameter_wear"} {
 			if err := ctx.Err(); err != nil {
 				return out, err
 			}

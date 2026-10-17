@@ -280,7 +280,7 @@ func (m *setupMachine) geomLocked(tbl *cnc.ToolTable, pocket int) *cnc.PocketGeo
 			g = &cnc.PocketGeom{}
 		}
 		if o.geom.LengthGeom != nil {
-			g.LengthGeom = o.geom.LengthGeom
+			g.LengthGeom, g.LengthWear = o.geom.LengthGeom, o.geom.LengthWear
 		}
 		if o.geom.DiameterGeom != nil {
 			g.DiameterGeom, g.DiameterWear = o.geom.DiameterGeom, o.geom.DiameterWear

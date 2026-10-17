@@ -113,7 +113,7 @@ func TestReadSlotsViaAsksOnlyTheNeededVariables(t *testing.T) {
 	if err != nil || len(slots) != 2 {
 		t.Fatalf("%v %v", slots, err)
 	}
-	want := []int{2015, 2415, 2615, 2009, 2409, 2609}
+	want := []int{2015, 2215, 2415, 2615, 2009, 2209, 2409, 2609}
 	for i, w := range want {
 		if asked[i] != w {
 			t.Fatalf("asked %v, want %v", asked, want)
@@ -134,5 +134,28 @@ func TestSetupSheetCarriesMachineOffsets(t *testing.T) {
 		func(int) *ManifestEntry { return nil })
 	if len(s.Tools) != 1 || s.Tools[0].OffsetLength != "8.4096" || s.Tools[0].OffsetDiameter != "0.3758" {
 		t.Fatalf("%+v", s.Tools)
+	}
+}
+
+func TestSetupSheetExpectedAndWear(t *testing.T) {
+	cards := &Cards{Tools: []CardTool{
+		{Number: 18, Type: "ball end mill", Diameter: 0.25},
+		{Number: 15, Type: "drill", Diameter: 0.421875},
+	}}
+	g := map[int]*PocketGeom{
+		18: {LengthGeom: f(3.4254), LengthWear: f(0), DiameterGeom: f(0.1604), DiameterWear: f(0)},
+		15: {LengthGeom: f(8.4096), LengthWear: f(-0.0012), DiameterGeom: f(0.3758), DiameterWear: f(0.0005)},
+	}
+	recs := map[int]*ManifestEntry{
+		18: rec("ball end mill", 0.25, 3.4254, ""),
+		15: rec("drill", 0.421875, 8.4096, ""),
+	}
+	s := BuildSetupSheet("3104", cards, func(p int) *PocketGeom { return g[p] }, func(p int) *ManifestEntry { return recs[p] })
+	ball, drill := s.Tools[1], s.Tools[0]
+	if ball.Status != StatusSwap || ball.ExpectedDiameter != "0.2500" || ball.ExpectedLength != "3.4254" || ball.WearDiameter != "" {
+		t.Fatalf("ball: %+v", ball)
+	}
+	if drill.Status != StatusOK || drill.ExpectedDiameter != "" || drill.WearLength != "-0.0012" || drill.WearDiameter != "+0.0005" {
+		t.Fatalf("drill: %+v", drill)
 	}
 }
