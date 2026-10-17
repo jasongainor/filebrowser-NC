@@ -65,6 +65,10 @@ type setupMachine struct {
 	manifest     cnc.Manifest
 	manifestPath string
 	manifestOK   bool
+
+	// checkedAt is the last poll that read the loaded program: the time
+	// the sheet on the display is current as of.
+	checkedAt time.Time
 }
 
 // SetupSheets owns the setup-sheet state for every machine.
@@ -131,6 +135,24 @@ func (s *SetupSheets) Sheet(machineID string) cnc.SetupSheet {
 	return s.sheetLocked(st, tbl)
 }
 
+// CheckedAt is when the sheet for a machine was last refreshed from the
+// control (zero before the first poll). Safe on a nil receiver.
+func (s *SetupSheets) CheckedAt(machineID string) time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	m := cncapi.FindMachine(s.d.Config.Snapshot(), machineID)
+	if m == nil {
+		return time.Time{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.ms[m.ID]; st != nil {
+		return st.checkedAt
+	}
+	return time.Time{}
+}
+
 // Step runs one poll for a machine: loaded program, sidecar, partial
 // re-read of non-ok pockets, manifest recording.
 func (s *SetupSheets) Step(ctx context.Context, machineID string) {
@@ -167,6 +189,7 @@ func (s *SetupSheets) Step(ctx context.Context, machineID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
+	m.checkedAt = now
 	for _, sl := range slots {
 		m.overlay[sl.Slot] = overlaySlot{geom: cnc.GeomOf(sl), at: now}
 	}
@@ -313,6 +336,14 @@ func (s *SetupSheets) recordLocked(id string, m *setupMachine, tbl *cnc.ToolTabl
 		status := cnc.PocketStatus(t, g, m.recLocked(p))
 		before, flagged := m.baseline[p]
 		switch {
+		case status == cnc.StatusOK && !flagged && g != nil && cnc.RecordStale(t, lengthOf(g), m.recLocked(p)):
+			// touched off since the record: record the program's tool at the new length
+			l := lengthOf(g)
+			m.manifest[strconv.Itoa(p)] = cnc.RecordFor(t, l, now.UTC().Format(time.RFC3339))
+			if m.manifestOK {
+				dirty = true
+			}
+			log.Printf("cncd: setup sheet %s: T%d re-recorded as %s %.4f, length %.4f", id, p, t.Type, t.Diameter, l)
 		case status == cnc.StatusOK && !flagged:
 			// fine all along
 		case status != cnc.StatusOK && !flagged:
@@ -340,4 +371,9 @@ func (s *SetupSheets) recordLocked(id string, m *setupMachine, tbl *cnc.ToolTabl
 			log.Printf("cncd: setup sheet %s: manifest save: %v", id, err)
 		}
 	}
+}
+
+func lengthOf(g *cnc.PocketGeom) float64 {
+	l, _ := g.Length()
+	return l
 }

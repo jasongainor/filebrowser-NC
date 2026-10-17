@@ -229,13 +229,22 @@ func PocketStatus(t CardTool, geom *PocketGeom, rec *ManifestEntry) string {
 	if rec == nil {
 		return StatusTouch
 	}
+	// A length that moved off the record means the pocket was touched off
+	// since: the tool there is the one this program set up (Jason: an
+	// offset change is the update, nothing to confirm).
+	if RecordStale(t, length, rec) {
+		return StatusOK
+	}
 	if !rec.Same(IdentityOf(t)) {
 		return StatusSwap
 	}
-	if math.Abs(length-rec.LengthGeom) > LengthTol {
-		return StatusTouch
-	}
 	return StatusOK
+}
+
+// RecordStale reports whether a drill/tap pocket's recorded length no
+// longer matches the machine (moved more than LengthTol).
+func RecordStale(t CardTool, length float64, rec *ManifestEntry) bool {
+	return rec != nil && !UsesDiameter(t) && math.Abs(length-rec.LengthGeom) > LengthTol
 }
 
 // TouchedOff reports whether a drill, tap or similar shows a new non-zero
