@@ -77,3 +77,47 @@ func TestFindProgramFile(t *testing.T) {
 		t.Fatalf("after repost got %q", pf.NC)
 	}
 }
+
+func TestFindProgramFileFolder(t *testing.T) {
+	dir := t.TempDir()
+	put(t, dir, "3202.nc", "%\nO03202 (x)\nM30\n", time.Minute)
+	if err := os.Mkdir(filepath.Join(dir, "3202"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pf, _ := FindProgramFile(dir, "3202")
+	if pf == nil || pf.Folder == "" || pf.Sidecar != "" || pf.Doc != "" {
+		t.Fatalf("empty folder -> %+v", pf)
+	}
+
+	// The sidecar moved into the folder, with a setup sheet beside it.
+	put(t, dir, "3202/3202.json", "{}", time.Minute)
+	put(t, dir, "3202/old sheet.html", "<p>", time.Hour)
+	put(t, dir, "3202/3202.html", "<p>", time.Minute)
+	put(t, dir, "3202/.3202.html", "<p>", 0)
+	pf, _ = FindProgramFile(dir, "3202")
+	if pf.Sidecar != filepath.Join(dir, "3202", "3202.json") {
+		t.Fatalf("sidecar -> %q", pf.Sidecar)
+	}
+	if pf.Doc != "3202.html" {
+		t.Fatalf("doc -> %q (newest html, no dot-files)", pf.Doc)
+	}
+
+	// A sidecar next to the .nc still wins.
+	put(t, dir, "3202.json", "{}", time.Minute)
+	pf, _ = FindProgramFile(dir, "3202")
+	if pf.Sidecar != filepath.Join(dir, "3202.json") {
+		t.Fatalf("sidecar -> %q (next to the .nc wins)", pf.Sidecar)
+	}
+
+	// Any json in the folder when it is not named for the program.
+	if err := os.Remove(filepath.Join(dir, "3202.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(dir, "3202", "3202.json"), filepath.Join(dir, "3202", "tools.json")); err != nil {
+		t.Fatal(err)
+	}
+	pf, _ = FindProgramFile(dir, "3202")
+	if filepath.Base(pf.Sidecar) != "tools.json" {
+		t.Fatalf("sidecar -> %q", pf.Sidecar)
+	}
+}

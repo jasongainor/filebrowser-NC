@@ -5,6 +5,8 @@
 // Pages, in order:
 //   'I'  FIX BEFORE RUN - only the pockets that are not ok (absent when all ok)
 //   'L'  the plain list: one line per pocket, run order, each once
+//        (I and L carry a QR to the program's setup sheet at the foot when
+//        cncd sends one)
 //   'T'  one tool per page: side-view silhouette, pocket, type, holder, and
 //        the diameter to enter (milling tools only)
 // The page only changes on a button press or when the loaded program changes.
@@ -68,9 +70,53 @@ inline int rowHeight(JsonObjectConst t) {
   return SHEET_ROW_H + SHEET_SUB_H * ((rowHasWant(t) ? 1 : 0) + (rowHasWear(t) ? 1 : 0));
 }
 
+// The QR to the setup sheet: rows of hex from cncd, one bit per module,
+// most significant bit first. Module size fits it in ~160 px portrait,
+// ~110 px landscape; the strip is the QR plus a white margin around it.
+constexpr int SHEET_QR_PAD = 14;
+inline int qrModules() {
+  JsonArrayConst rows = payload_doc["setup"]["qr"]["rows"];
+  return rows.isNull() ? 0 : (int) rows.size();
+}
+inline int qrScale() {
+  int n = qrModules();
+  if (n == 0) return 0;
+  int s = (cfg.res_y >= cfg.res_x ? 160 : 110) / n;
+  return s < 2 ? 2 : s;
+}
+inline int qrStripH() {
+  int n = qrModules();
+  return n ? n * qrScale() + 2 * SHEET_QR_PAD : 0;
+}
+
+void drawSheetQR() {
+  int n = qrModules();
+  if (n == 0) return;
+  int sc = qrScale();
+  int x0 = 10 + SHEET_QR_PAD, y0 = cfg.res_y - qrStripH() + SHEET_QR_PAD;
+  JsonArrayConst rows = payload_doc["setup"]["qr"]["rows"];
+  for (int r = 0; r < n; r++) {
+    const char *hex = rows[r] | "";
+    for (int c = 0; c < n; c++) {
+      char ch = hex[c / 4];
+      if (!ch) break;
+      int v = (ch >= 'a') ? ch - 'a' + 10 : (ch >= 'A') ? ch - 'A' + 10 : ch - '0';
+      if (v & (8 >> (c % 4))) display.fillRect(x0 + c * sc, y0 + r * sc, sc, sc, GxEPD_BLACK);
+    }
+  }
+  int tx = x0 + n * sc + SHEET_QR_PAD;
+  display.setFont(&FreeMonoBold12pt7b);
+  display.setCursor(tx, y0 + 24);
+  display.print("Setup sheet");
+  display.setFont(&FreeMono9pt7b);
+  display.setCursor(tx, y0 + 50);
+  display.print(fitToWidth(String((const char *) (payload_doc["setup"]["qr"]["url"] | "")),
+                           cfg.res_x - tx - 10));
+}
+
 // Pack rows (only the not-ok ones when onlyBad) into pages by height.
 void packSheetPages(char kind, bool onlyBad, JsonArrayConst tools) {
-  int avail = cfg.res_y - SHEET_ROWS_TOP - 6;
+  int avail = cfg.res_y - SHEET_ROWS_TOP - 6 - qrStripH();
   int pg = 0, first = 0, count = 0, used = 0, seen = 0;
   int n = tools.isNull() ? 0 : (int) tools.size();
   for (int i = 0; i < n; i++) {
@@ -222,6 +268,7 @@ void renderSheetList(const SheetPage &p) {
   display.print("LEN");
   display.setCursor(dia_x, 50 + 4 + 16);
   display.print("DIA");
+  drawSheetQR();
 
   if (tools.isNull() || tools.size() == 0) {
     display.setFont(&FreeMono12pt7b);

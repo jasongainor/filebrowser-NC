@@ -48,6 +48,15 @@ type SetupSheet struct {
 	Program string      `json:"program,omitempty"`
 	Title   string      `json:"title,omitempty"`
 	Tools   []SetupTool `json:"tools,omitempty"`
+	// QR opens the program's setup sheet; nil when it has none.
+	QR *SheetQR `json:"qr,omitempty"`
+}
+
+// SheetQR is a QR code as rows of hex, most significant bit first, one
+// bit per module, no quiet zone; len(Rows) modules square.
+type SheetQR struct {
+	URL  string   `json:"url"`
+	Rows []string `json:"rows"`
 }
 
 // BuildSetupSheet assembles the sheet for cards. geom returns what the

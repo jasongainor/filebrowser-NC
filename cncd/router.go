@@ -77,6 +77,7 @@ func NewRouter(d Deps) http.Handler {
 	registerMCP(r, d)
 	registerRunKind(r, d)
 	registerJobs(r, d)
+	registerSetupDoc(r, d)
 
 	return r
 }

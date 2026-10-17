@@ -47,8 +47,15 @@ func FileProgramNumber(text string) string {
 // ProgramFile is the NC file chosen for a loaded program.
 type ProgramFile struct {
 	NC      string    // absolute path of the .nc
-	Sidecar string    // absolute path of <base>.json, "" when it does not exist
+	Sidecar string    // absolute path of the sidecar json, "" when there is none
 	ModTime time.Time // of the .nc
+	// Folder is <base>/ next to the .nc, "" when there is none. It holds
+	// what the post writes for the program besides the .nc: the sidecar
+	// and the setup sheet.
+	Folder string
+	// Doc is the setup sheet in Folder (the newest .html, .htm or .pdf),
+	// "" when there is none.
+	Doc string
 }
 
 // FindProgramFile scans dir (not recursively) for .nc files whose O line is
@@ -84,11 +91,53 @@ func FindProgramFile(dir, number string) (*ProgramFile, error) {
 	if best == nil {
 		return nil, nil
 	}
-	side := strings.TrimSuffix(best.NC, filepath.Ext(best.NC)) + ".json"
-	if st, err := os.Stat(side); err == nil && !st.IsDir() {
-		best.Sidecar = side
+	base := strings.TrimSuffix(best.NC, filepath.Ext(best.NC))
+	if st, err := os.Stat(base); err == nil && st.IsDir() {
+		best.Folder = base
+		best.Doc = newestWithExt(base, ".html", ".htm", ".pdf")
+	}
+	// The sidecar: <base>.json next to the .nc, else <base>/<base>.json,
+	// else the newest .json in <base>/.
+	for _, side := range []string{base + ".json", filepath.Join(base, filepath.Base(base)+".json")} {
+		if st, err := os.Stat(side); err == nil && !st.IsDir() {
+			best.Sidecar = side
+			break
+		}
+	}
+	if best.Sidecar == "" && best.Folder != "" {
+		if name := newestWithExt(best.Folder, ".json"); name != "" {
+			best.Sidecar = filepath.Join(best.Folder, name)
+		}
 	}
 	return best, nil
+}
+
+// newestWithExt is the name of the newest regular file in dir with one of
+// exts (case-insensitive), "" when there is none. Dot-files are skipped.
+func newestWithExt(dir string, exts ...string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var name string
+	var newest time.Time
+	for _, e := range entries {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		ok := false
+		for _, x := range exts {
+			ok = ok || strings.EqualFold(filepath.Ext(e.Name()), x)
+		}
+		info, err := e.Info()
+		if !ok || err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if name == "" || info.ModTime().After(newest) {
+			name, newest = e.Name(), info.ModTime()
+		}
+	}
+	return name
 }
 
 func readHead(path string, n int) (string, error) {

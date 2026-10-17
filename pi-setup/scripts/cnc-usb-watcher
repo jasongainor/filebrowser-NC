@@ -29,6 +29,7 @@
 #        rename in place). Filebrowser is the source of truth for
 #        existing files — controller modifications to existing files
 #        get clobbered. Controller-only new files get preserved.
+#        Only what the Haas can use goes on (see export_entries).
 #     4. Snapshot the new image listing.
 #     5. Reattach LUN. Controller re-mounts and sees the synced content.
 #
@@ -78,12 +79,30 @@ write_epoch() { printf '%s' "$1" > "$2"; }
 inhibit()     { write_epoch "$(( $(date +%s) + 5 ))" "$INHIBIT_UNTIL_FILE"; }
 inhibited()   { (( $(date +%s) < $(read_epoch "$INHIBIT_UNTIL_FILE") )); }
 
-# Content fingerprint of what the controller sees (paths + bytes, without
-# the excluded paths). macOS closes SMB files ~40 s after a post; that
+# The top-level share entries that go on the stick, NUL-separated. Left
+# off: cncd's cnc-tool-tables, dot/temp files, the post's .json sidecars,
+# and a program's folder (3202/ beside 3202.nc, holding its sidecar and
+# setup sheet). None of those are anything the Haas can run.
+export_entries() {
+  local name
+  (cd "$SHARE_PATH" && for name in * ; do
+    [[ -e $name ]] || continue
+    case $name in
+      cnc-tool-tables|*.tmp|*.json|*.JSON) continue ;;
+    esac
+    if [[ -d $name ]] && compgen -G "$name.[nN][cC]" >/dev/null; then
+      continue
+    fi
+    printf '%s\0' "$name"
+  done)
+}
+
+# Content fingerprint of what the controller sees (paths + bytes of the
+# exported entries). macOS closes SMB files ~40 s after a post; that
 # close fires events but changes nothing, so a settle with the same
 # fingerprint as the last export is skipped instead of replugging.
 fingerprint() {
-  (cd "$SHARE_PATH" && find . -type f -not -path './cnc-tool-tables/*' -not -name '.*' -not -name '*.tmp' -print0 \
+  (cd "$SHARE_PATH" && export_entries | xargs -0 -r sh -c 'find "$@" -type f -not -name ".*" -not -name "*.tmp" -print0' sh \
     | sort -z | xargs -0 -r sha1sum) | sha1sum | cut -d' ' -f1
 }
 
@@ -166,8 +185,10 @@ sync_image() {
     log "ERROR: mkfs.vfat failed on temp image"
     return 1
   fi
-  if [[ -n "$(ls -A "$SHARE_PATH" 2>/dev/null)" ]]; then
-    if ! (cd "$SHARE_PATH" && mcopy -s -m -Q -i "$tmp_img" -- * :: 2>/dev/null); then
+  local -a entries=()
+  mapfile -d '' entries < <(export_entries)
+  if (( ${#entries[@]} )); then
+    if ! (cd "$SHARE_PATH" && mcopy -s -m -Q -i "$tmp_img" -- "${entries[@]}" :: 2>/dev/null); then
       rm -f "$tmp_img"
       log "ERROR: mcopy failed during image rebuild"
       return 1

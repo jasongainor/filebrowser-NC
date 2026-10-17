@@ -436,3 +436,86 @@ func TestSetupSheetBusySubprogramKeepsProgram(t *testing.T) {
 		t.Fatalf("busy subprogram replaced the program: %q", s.Program)
 	}
 }
+
+// The post moved the sidecar into 31011/ beside a setup sheet: the sheet
+// still builds, the display gets a QR of /setup/31011 on the host it used,
+// and that address lands on the setup sheet.
+func TestSetupSheetFolderAndQR(t *testing.T) {
+	r := newSetupRig(t)
+	folder := filepath.Join(r.d.Root, "31011")
+	if err := os.Mkdir(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(r.d.Root, "31011.json"), filepath.Join(folder, "31011.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(folder, "31011 setup.html"), []byte("<h1>sheet</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.step()
+	r.d.Setup = r.sheets
+	if err := r.d.Config.Update(func(c *settings.Cnc) error {
+		c.Displays = []settings.Display{{ID: "d1", MachineID: "m1"}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewRouter(r.d)
+	req := httptest.NewRequest(http.MethodGet, "/api/displays/d1", nil)
+	req.Host = "192.168.20.11:8080"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var body struct {
+		Setup cnc.SetupSheet `json:"setup"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Setup.State != cnc.SheetReady {
+		t.Fatalf("sidecar in the folder not found: %+v", body.Setup)
+	}
+	qr := body.Setup.QR
+	if qr == nil || qr.URL != "http://192.168.20.11:8080/setup/31011" {
+		t.Fatalf("qr %+v", qr)
+	}
+	n := len(qr.Rows)
+	if n < 21 || len(qr.Rows[0]) != (n+3)/4 {
+		t.Fatalf("qr is %d rows of %d hex", n, len(qr.Rows[0]))
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/setup/31011", nil))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/setup/31011/31011%20setup.html" {
+		t.Fatalf("redirect %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/setup/31011/31011%20setup.html", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "sheet") {
+		t.Fatalf("sheet %d %q", rec.Code, rec.Body)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/setup/31011/../31011.nc", nil))
+	if rec.Code == 200 && strings.Contains(rec.Body.String(), "O31011") {
+		t.Fatal("served a file outside the folder")
+	}
+
+	// No setup sheet: no QR, and the address says so.
+	if err := os.Remove(filepath.Join(folder, "31011 setup.html")); err != nil {
+		t.Fatal(err)
+	}
+	if qr := r.d.setupQR("31011", "h"); qr != nil {
+		t.Fatalf("qr without a sheet: %+v", qr)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/setup/31011", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("no sheet -> %d", rec.Code)
+	}
+}
+
+func TestQRRowsPackMSBFirst(t *testing.T) {
+	got := qrRows([][]bool{{true, false, false, false, true}, {false, true, true, true, true}})
+	if got[0] != "88" || got[1] != "78" {
+		t.Fatalf("%v", got)
+	}
+}
