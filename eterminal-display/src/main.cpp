@@ -99,9 +99,10 @@ struct DisplayConfig {
   // aligned columns, default) or "cells" (the 2×N magazine grid followed by
   // the library tables). rotate: 0 = landscape, 90 = portrait. Both come
   // from the server Display config; rotate can also be toggled on-device by
-  // long-pressing Refresh.
+  // long-pressing Refresh. Portrait by default (Jason, 2026-10-16): the
+  // setup-sheet table has room for the offsets that way.
   String pocket_view = "table";
-  int rotate = 0;
+  int rotate = 90;
   String fields[8];      // ordered library columns; size matches the
                          // server-side DefaultDisplayFields length
   int fields_count = 6;
