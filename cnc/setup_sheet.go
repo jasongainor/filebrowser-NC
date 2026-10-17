@@ -20,14 +20,18 @@ const (
 
 // SetupTool is one pocket of the loaded program.
 type SetupTool struct {
-	Pocket      int        `json:"pocket"`
-	Status      string     `json:"status"`
-	Label       string     `json:"label"` // "1/2 drill"
-	Type        string     `json:"type"`
-	Description string     `json:"description,omitempty"`
-	Holder      string     `json:"holder,omitempty"`
-	Diameter    string     `json:"diameter,omitempty"` // inches, 4 places; mills only
-	Shape       *ToolShape `json:"shape,omitempty"`
+	Pocket      int    `json:"pocket"`
+	Status      string `json:"status"`
+	Label       string `json:"label"` // "1/2 drill"
+	Type        string `json:"type"`
+	Description string `json:"description,omitempty"`
+	Holder      string `json:"holder,omitempty"`
+	Diameter    string `json:"diameter,omitempty"` // inches, 4 places; mills only
+	// The machine's offsets for the pocket, inches to 4 places: length
+	// geometry and diameter (geometry + wear). Empty when not read.
+	OffsetLength   string     `json:"offset_length,omitempty"`
+	OffsetDiameter string     `json:"offset_diameter,omitempty"`
+	Shape          *ToolShape `json:"shape,omitempty"`
 }
 
 // SetupSheet is the payload. Tools are in run order, each pocket once.
@@ -62,6 +66,14 @@ func BuildSetupSheet(program string, cards *Cards, geom func(pocket int) *Pocket
 		}
 		if UsesDiameter(t) {
 			st.Diameter = fmt.Sprintf("%.4f", t.Diameter)
+		}
+		if g := geom(t.Number); g != nil {
+			if l, ok := g.Length(); ok {
+				st.OffsetLength = fmt.Sprintf("%.4f", l)
+			}
+			if d, ok := g.Diameter(); ok {
+				st.OffsetDiameter = fmt.Sprintf("%.4f", d)
+			}
 		}
 		s.Tools = append(s.Tools, st)
 	}
