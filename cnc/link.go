@@ -55,7 +55,7 @@ const (
 	// back on its own without an operator poking anything. Jittered so a
 	// multi-machine shop doesn't resynchronise its retries after a
 	// switch reboot.
-	linkRetryFloor = 1 * time.Second
+	linkRetryFloor   = 1 * time.Second
 	linkRetryCeiling = 30 * time.Second
 
 	// defaultBaselineInterval is the fallback cadence for the always-on
@@ -460,7 +460,7 @@ func (l *Link) service(conn Conn, br *bufio.Reader, req *linkReq, lastQueryAt *t
 			// cross-talk class validateResponseShape exists to catch, and on
 			// a persistent socket a stale frame would linger indefinitely
 			// rather than dying with the connection.
-			l.drain(conn, br)
+			l.resync(conn, br)
 			return nil
 		}
 		// Write error / EOF / reset — the socket itself is gone.
@@ -475,6 +475,11 @@ func (l *Link) service(conn Conn, br *bufio.Reader, req *linkReq, lastQueryAt *t
 		// fault — the socket is fine, the frame was not.
 		res.Error = err.Error()
 		req.respCh <- res
+		// A bad frame means the stream is out of step: an empty reply now
+		// usually means the real one lands late and would answer the next
+		// query, and the one after, for good (seen 2026-10-17 00:21: every
+		// reply one behind until cncd restarted). Resync before the next.
+		l.resync(conn, br)
 		return nil
 	}
 	res.Value = v
@@ -505,6 +510,38 @@ func (l *Link) drain(conn Conn, br *bufio.Reader) {
 	}
 	if discarded > 0 {
 		l.logf("warn", "resynced bridge stream after a silent query (%d stale bytes discarded)", discarded)
+	}
+}
+
+// resyncQuiet / resyncCap bound resync: read until the line has been
+// quiet for resyncQuiet, never longer than resyncCap.
+const (
+	resyncQuiet = 250 * time.Millisecond
+	resyncCap   = 1500 * time.Millisecond
+)
+
+// resync discards bytes until the stream goes quiet, so a reply that
+// arrives late is not read as the next query's answer. drain only takes
+// what is already buffered; a late reply is usually still on the wire.
+func (l *Link) resync(conn Conn, br *bufio.Reader) {
+	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
+	deadline := time.Now().Add(resyncCap)
+	discarded := 0
+	buf := make([]byte, 512)
+	for time.Now().Before(deadline) {
+		quiet := time.Now().Add(resyncQuiet)
+		if quiet.After(deadline) {
+			quiet = deadline
+		}
+		_ = conn.SetReadDeadline(quiet)
+		n, err := br.Read(buf)
+		discarded += n
+		if err != nil || n == 0 {
+			break
+		}
+	}
+	if discarded > 0 {
+		l.logf("warn", "resynced bridge stream (%d stale bytes discarded)", discarded)
 	}
 }
 
