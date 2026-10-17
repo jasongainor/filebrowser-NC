@@ -321,8 +321,14 @@ func extractProgram(m *Metric) string {
 	if m == nil {
 		return ""
 	}
-	if parsed, ok := m.Parsed.(map[string]any); ok {
+	switch parsed := m.Parsed.(type) {
+	case map[string]any:
 		if v, ok := parsed["program"].(string); ok {
+			return v
+		}
+	case map[string]string:
+		// parseValue's own shape, before any JSON round-trip.
+		if v, ok := parsed["program"]; ok {
 			return v
 		}
 	}
