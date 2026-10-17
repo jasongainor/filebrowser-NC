@@ -96,13 +96,14 @@ func (a ToolIdentity) Same(b ToolIdentity) bool {
 // fields were not read.
 type PocketGeom struct {
 	LengthGeom   *float64
+	LengthWear   *float64
 	DiameterGeom *float64
 	DiameterWear *float64
 }
 
 // GeomOf lifts a tool-table slot.
 func GeomOf(s ToolTableSlot) PocketGeom {
-	g := PocketGeom{LengthGeom: s.LengthGeom, DiameterGeom: s.DiameterGeom, DiameterWear: s.DiameterWear}
+	g := PocketGeom{LengthGeom: s.LengthGeom, LengthWear: s.LengthWear, DiameterGeom: s.DiameterGeom, DiameterWear: s.DiameterWear}
 	if g.DiameterGeom == nil && s.EffectiveDiameter != nil {
 		g.DiameterGeom = s.EffectiveDiameter
 		g.DiameterWear = nil
