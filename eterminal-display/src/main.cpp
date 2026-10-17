@@ -129,6 +129,11 @@ String last_updated_display = "";
 // Forward decls — renderStatusBar() calls computeTotalPages() which is
 // defined further down; one-pass C++ parser needs the prototype.
 int computeTotalPages();
+bool sheetActive();       // setup_sheet.h
+bool setupNoJson();
+int sheetTotalPages();
+void renderSheetPage();
+void sheetRememberPage();
 bool machine_connected = false;
 String machine_name = "";
 int periodic_full_refresh_at_page = 0;   // for ghosting purge
@@ -310,6 +315,9 @@ void setupOTA() {
 }
 
 // ─── HTTP fetch ──────────────────────────────────────────────────────
+static uint32_t g_payload_hash = 0;
+static bool g_payload_changed = true;
+
 bool fetchPayload() {
   String url = cfg.base_url + "/api/displays/" + cfg.display_id;
   HTTPClient http;
@@ -336,9 +344,18 @@ bool fetchPayload() {
     logf("HTTP: payload parse error: %s", err.c_str());
     return false;
   }
-  // Adopt the new payload + persist to SD.
+  // Adopt the new payload + persist to SD. g_payload_changed tells the poll
+  // loop whether the screen needs redrawing at all (an e-paper redraw is slow
+  // and flashes; an unchanged payload is left alone).
+  uint32_t h = 2166136261u;  // FNV-1a over the raw body
+  for (size_t i = 0; i < body.length(); i++) {
+    h ^= (uint8_t) body[i];
+    h *= 16777619u;
+  }
+  g_payload_changed = (h != g_payload_hash);
+  g_payload_hash = h;
   payload_doc = fresh;
-  writeCacheToSD(body);
+  if (g_payload_changed) writeCacheToSD(body);
   last_good_fetch_ms = millis();
   serving_cache = false;
   return true;
@@ -362,6 +379,12 @@ void renderStatusBar(int top_y) {
   display.setCursor(8, top_y + 30);
   display.print("updated ");
   display.print(last_updated_display);
+  // A program is loaded but cncd has no JSON sidecar for it: say so, small,
+  // under the "updated" line, and show the ordinary tool list below.
+  if (setupNoJson()) {
+    display.setCursor(8, top_y + 44);
+    display.print("no JSON");
+  }
 
   int total_pages = computeTotalPages();
   String pager = "page " + String(current_page + 1) +
@@ -389,6 +412,7 @@ int pageSize() {
 }
 
 int computeTotalPages() {
+  if (sheetActive()) return sheetTotalPages();
   int per = pageSize();
   if (cfg.pocket_view == "table") {
     // Paginated magazine table: one page set over the pockets array.
@@ -645,10 +669,18 @@ void renderToolTable(JsonArrayConst arr, int start, int end, const char *title) 
   }
 }
 
+#include "setup_sheet.h"
+
 // Dispatch the current page to the right renderer based on pocket_view.
 //  - "table": every page is a slice of the magazine (pockets) table.
 //  - "cells": page 0 is the magazine grid; later pages are library tables.
+//  - when cncd sends a setup sheet for the loaded program (setup.state ==
+//    "sheet"), the pages are the setup sheet instead (setup_sheet.h).
 void renderCurrentPage() {
+  if (sheetActive()) {
+    renderSheetPage();
+    return;
+  }
   int per = pageSize();
   char title[56];
   if (cfg.pocket_view == "table") {
@@ -713,9 +745,21 @@ void renderAll() {
   cfg.res_y = display.height();
   display.setTextColor(GxEPD_BLACK);
 
-  // Page count can shrink (mode change, smaller payload) — keep in range.
-  int total_pages = computeTotalPages();
-  if (current_page < 0 || current_page >= total_pages) current_page = 0;
+  // The page only changes on a button press or when the loaded program (or
+  // sheet state) changes; there is no timeout back to page 1.
+  String setup_key = String((const char *) (payload_doc["setup"]["state"] | "none")) + ":" +
+                     String((const char *) (payload_doc["setup"]["program"] | ""));
+  bool program_changed = (setup_key != g_setup_key);
+  g_setup_key = setup_key;
+  if (sheetActive()) {
+    buildSheetPages();
+    sheetSyncPage(program_changed);
+  } else {
+    if (program_changed) current_page = 0;
+    // Page count can shrink (mode change, smaller payload) — keep in range.
+    int total_pages = computeTotalPages();
+    if (current_page < 0 || current_page >= total_pages) current_page = 0;
+  }
 
   // Periodic full clear every 12 renders to scrub e-paper ghosting.
   bool full_clear = (periodic_full_refresh_at_page++ % 12) == 0;
@@ -757,11 +801,13 @@ void handleButtons() {
     last_press_ms = millis();
     current_page = (current_page - 1 + total) % total;
     logf("BTN: Left -> page %d/%d", current_page + 1, total);
+    if (sheetActive()) sheetRememberPage();
     renderAll();
   } else if (n == LOW && prev_next == HIGH && can) {
     last_press_ms = millis();
     current_page = (current_page + 1) % total;
     logf("BTN: Right -> page %d/%d", current_page + 1, total);
+    if (sheetActive()) sheetRememberPage();
     renderAll();
   }
 
@@ -892,13 +938,17 @@ void loop() {
   if (WiFi.status() == WL_CONNECTED) {
     if (now - last_poll_ms > poll_ms || last_poll_ms == 0) {
       last_poll_ms = now;
+      bool was_cached = serving_cache;
       bool ok = fetchPayload();
-      if (!ok && !serving_cache && loadCacheFromSD()) {
-        serving_cache = true;
-      } else if (!ok) {
+      bool redraw;
+      if (ok) {
+        redraw = g_payload_changed || was_cached;  // changed, or back from offline
+      } else {
+        if (!was_cached) loadCacheFromSD();
         serving_cache = true;  // already on cache, mark stale
+        redraw = !was_cached;  // only the first failure changes what is shown
       }
-      renderAll();
+      if (redraw) renderAll();
     }
   } else {
     // Try to reconnect every 30s while serving the cache.

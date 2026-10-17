@@ -130,6 +130,35 @@ Advances to the next page. Wraps from the last library page back to the
 pocket map. Page changes never refetch — they render the cached
 payload, so paging works even when the server is unreachable.
 
+### Setup sheet (loaded program)
+
+cncd asks the Haas which program is loaded (Q500, once a minute), finds
+that program's newest `.nc` in the share root by the **O number inside the
+file**, and reads its `<base>.json` sidecar (`gmw-nc-cards/1`). The payload
+then carries a `setup` object and the display switches to the setup sheet:
+
+1. **Fix pages** (only while some pocket is not `ok`): the pockets that need
+   attention, as `T12  1/2 drill   TOUCH`.
+2. **The list**: every pocket the program uses, run order, once each.
+   When all pockets are `ok` this is page 1.
+3. **One tool per page**: side-view silhouette, pocket, type, holder, and
+   the diameter to enter (4 places, milling/face/chamfer/thread mills only;
+   drills and taps show none).
+
+Statuses: `ok`, `SWAP` (pocket holds a different tool), `TOUCH` (right tool,
+length never recorded or moved > .005), `EMPTY` (machine length 0), `ERROR`
+(a fixed pocket holds the wrong tool). There is no confirm step: while a
+pocket is not ok, cncd re-reads just that pocket every minute and records
+the tool and its new length in `cnc-tool-tables/<machine>/manifest.json`
+when the machine shows it was touched off.
+
+The page changes only on a button press or when the loaded program
+changes - there is no timeout. With no sidecar for the loaded program the
+ordinary tool list is shown with a small `no JSON` note under the
+`updated` line. The display polls every `poll_powered_s` (set it to 60 on the
+display's config) and redraws only when the payload changed. Times are
+shown in America/New_York.
+
 ## Power notes
 
 USB-C is the expected powered path. The firmware uses `poll_powered_s`

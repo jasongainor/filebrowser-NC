@@ -31,6 +31,10 @@ type Deps struct {
 	Registry *cnc.Registry
 	Config   *Store
 	Root     string
+	// Setup is the loaded-program setup sheet (setup_sheet.go). Nil on
+	// hosts that don't run its poller; the display payload then reports
+	// state "none".
+	Setup *SetupSheets
 }
 
 // NewRouter builds the cncd HTTP handler: /api/cnc/*, /api/displays/{id},

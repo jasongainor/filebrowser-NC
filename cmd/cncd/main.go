@@ -69,6 +69,7 @@ func main() {
 		Config:   store,
 		Root:     *root,
 	}
+	deps.Setup = cncd.NewSetupSheets(deps)
 	handler := cncd.NewRouter(deps)
 
 	srv := &http.Server{
@@ -94,6 +95,10 @@ func main() {
 	if cncd.ShouldRefreshToolTable(deps) {
 		go cncd.RunToolTableRefresher(ctx, deps, 0)
 	}
+
+	// Setup sheet: once a minute, learn which program is loaded and keep
+	// its tool statuses current for the display's "setup" payload.
+	go deps.Setup.Run(ctx)
 
 	go func() {
 		log.Printf("cncd: serving %s on %s", *root, *listen)

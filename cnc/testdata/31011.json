@@ -1,0 +1,40 @@
+{
+ "schema": "gmw-nc-cards/1",
+ "program": {
+  "name": "31011",
+  "comment": "4B326FE OP0A drill and predrill",
+  "unit": "in"
+ },
+ "tools": [
+  {
+   "number": 14,
+   "description": "",
+   "type": "chamfer mill",
+   "vendor": "",
+   "productId": "",
+   "diameter": 0.37499999999999994,
+   "cornerRadius": 0,
+   "taperAngle": 0.7853981633974483,
+   "flutes": 4,
+   "fluteLength": 0.7499999999999999,
+   "bodyLength": 1.4999999999999998,
+   "holder": "3/8” Shrink Fit CAT40 end mill holder G3.15",
+   "isDrill": false
+  },
+  {
+   "number": 15,
+   "description": "1/2\"  Drill  135°",
+   "type": "drill",
+   "vendor": "",
+   "productId": "",
+   "diameter": 0.4999999999999999,
+   "cornerRadius": 0,
+   "taperAngle": 2.356194490192345,
+   "flutes": 1,
+   "fluteLength": 2.5,
+   "bodyLength": 2.5999999999999996,
+   "holder": "Maritool CAT40-ER40-3.0",
+   "isDrill": true
+  }
+ ]
+}

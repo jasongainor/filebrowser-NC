@@ -196,7 +196,8 @@ func (d Deps) ToolTableDirAbs(machineID string) (string, error) {
 
 // NewestJSONIn returns the most recently modified *.json file
 // directly inside dir, or "" (no error) when dir doesn't exist yet.
-// Mirrors http/cnc.go's newestJSONIn.
+// Mirrors http/cnc.go's newestJSONIn. The setup-sheet manifest.json that
+// shares the folder is not a tool-table dump and is skipped.
 func NewestJSONIn(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -210,7 +211,7 @@ func NewestJSONIn(dir string) (string, error) {
 		newestMod time.Time
 	)
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || e.Name() == cnc.ManifestFileName {
 			continue
 		}
 		info, err := e.Info()
