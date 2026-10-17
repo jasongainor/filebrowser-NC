@@ -22,9 +22,49 @@ func (s *Streamer) LoadedProgram(ctx context.Context) (string, error) {
 
 // LoadedProgramVia is LoadedProgram over any Q-code function (a seam for tests).
 func LoadedProgramVia(ctx context.Context, query func(context.Context, int, *int) (*QueryResult, error)) (string, error) {
+	token, _, err := ProgramStateVia(ctx, query)
+	return token, err
+}
+
+// ProgramState is LoadedProgram plus whether the control is busy (in a
+// cycle): busy means the token came from #4115, which during a touch-off
+// macro is the macro's own O number.
+func (s *Streamer) ProgramState(ctx context.Context) (string, bool, error) {
+	return ProgramStateVia(ctx, s.Query)
+}
+
+// toolInSpindleVar is the Haas "tool in spindle" macro variable.
+const toolInSpindleVar = 3026
+
+// ToolInSpindle reads #3026.
+func (s *Streamer) ToolInSpindle(ctx context.Context) (int, error) {
+	return ToolInSpindleVia(ctx, s.Query)
+}
+
+// ToolInSpindleVia is ToolInSpindle over any Q-code function.
+func ToolInSpindleVia(ctx context.Context, query func(context.Context, int, *int) (*QueryResult, error)) (int, error) {
+	v := toolInSpindleVar
+	res, err := query(ctx, 600, &v)
+	if err != nil {
+		return 0, err
+	}
+	if !res.OK {
+		return 0, fmt.Errorf("#%d: %s", v, res.Error)
+	}
+	switch x := res.Parsed.(type) {
+	case float64:
+		return int(x), nil
+	case int:
+		return x, nil
+	}
+	return 0, fmt.Errorf("#%d: no tool number in %q", v, res.Value)
+}
+
+// ProgramStateVia is ProgramState over any Q-code function.
+func ProgramStateVia(ctx context.Context, query func(context.Context, int, *int) (*QueryResult, error)) (string, bool, error) {
 	res, err := query(ctx, 500, nil)
 	if err == nil && res.OK {
-		return extractProgram(&Metric{Parsed: res.Parsed, Value: res.Value}), nil
+		return extractProgram(&Metric{Parsed: res.Parsed, Value: res.Value}), false, nil
 	}
 	q500 := err
 	if q500 == nil {
@@ -33,10 +73,10 @@ func LoadedProgramVia(ctx context.Context, query func(context.Context, int, *int
 	v := programMacroVar
 	mres, merr := query(ctx, 600, &v)
 	if merr != nil {
-		return "", fmt.Errorf("%v; #%d: %w", q500, v, merr)
+		return "", false, fmt.Errorf("%v; #%d: %w", q500, v, merr)
 	}
 	if !mres.OK {
-		return "", fmt.Errorf("%v; #%d: %s", q500, v, mres.Error)
+		return "", false, fmt.Errorf("%v; #%d: %s", q500, v, mres.Error)
 	}
 	var n float64
 	switch x := mres.Parsed.(type) {
@@ -46,9 +86,9 @@ func LoadedProgramVia(ctx context.Context, query func(context.Context, int, *int
 		n = float64(x)
 	}
 	if n <= 0 || n != float64(int(n)) {
-		return "", fmt.Errorf("%v; #%d: no program number in %q", q500, v, mres.Value)
+		return "", false, fmt.Errorf("%v; #%d: no program number in %q", q500, v, mres.Value)
 	}
-	return fmt.Sprintf("O%d", int(n)), nil
+	return fmt.Sprintf("O%d", int(n)), true, nil
 }
 
 // ReadToolSlots reads length and diameter, geometry and wear, for just the

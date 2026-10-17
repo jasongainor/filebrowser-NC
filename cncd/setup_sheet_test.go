@@ -19,6 +19,8 @@ import (
 type fakeSetupSource struct {
 	running, up bool
 	program     string
+	busy        bool
+	spindle     int
 	err         error
 	// length/diameter the control "shows" per pocket for partial reads
 	live  map[int][2]float64
@@ -27,9 +29,10 @@ type fakeSetupSource struct {
 
 func (f *fakeSetupSource) IsRunning() bool { return f.running }
 func (f *fakeSetupSource) LinkUp() bool    { return f.up }
-func (f *fakeSetupSource) LoadedProgram(context.Context) (string, error) {
-	return f.program, f.err
+func (f *fakeSetupSource) ProgramState(context.Context) (string, bool, error) {
+	return f.program, f.busy, f.err
 }
+func (f *fakeSetupSource) ToolInSpindle(context.Context) (int, error) { return f.spindle, nil }
 func (f *fakeSetupSource) ReadToolSlots(_ context.Context, pockets []int) ([]cnc.ToolTableSlot, error) {
 	f.reads = append(f.reads, append([]int(nil), pockets...))
 	var out []cnc.ToolTableSlot
@@ -138,9 +141,9 @@ func TestSetupSheetNoJSONAndNoProgram(t *testing.T) {
 	if s := r.sheets.Sheet("m1"); s.State != cnc.SheetNoJSON || s.Program != "31011" || len(s.Tools) != 0 {
 		t.Fatalf("no sidecar: %+v", s)
 	}
-	r.src.program = "MDI"
+	r.src.program = "MDI" // MDI leaves the program in memory
 	r.step()
-	if s := r.sheets.Sheet("m1"); s.State != cnc.SheetNone {
+	if s := r.sheets.Sheet("m1"); s.State != cnc.SheetNoJSON || s.Program != "31011" {
 		t.Fatalf("MDI: %+v", s)
 	}
 	r.src.program = "O99999" // not on disk
@@ -292,10 +295,10 @@ func TestSetupSheetProgramChangeResets(t *testing.T) {
 	r := newSetupRig(t)
 	r.src.live[15] = [2]float64{8.4096, 0.3758}
 	r.step()
-	r.src.program = "MDI"
+	r.src.program = "O99999" // another program loaded
 	r.step()
-	if r.sheets.Sheet("m1").State != cnc.SheetNone {
-		t.Fatal("expected none after MDI")
+	if s := r.sheets.Sheet("m1"); s.Program != "99999" {
+		t.Fatalf("expected the new program, got %+v", s)
 	}
 	r.src.program = "O31011"
 	r.step()
@@ -389,5 +392,47 @@ func TestTouchedOffOnDiameterChange(t *testing.T) {
 	}
 	if cnc.TouchedOff(ball, before, before) {
 		t.Fatal("nothing changed")
+	}
+}
+
+// Touch-offs are always macros. A re-touch can land on the same length,
+// so the macro itself (O9000+ running with the tool in the spindle) is the
+// touch-off: T15 records at its unchanged length when the macro ends.
+func TestSetupSheetTouchOffMacroRecordsSameLength(t *testing.T) {
+	r := newSetupRig(t)
+	r.src.live[15] = [2]float64{8.4096, 0.3758}
+	r.step()
+	if r.status(15) != cnc.StatusTouch {
+		t.Fatal("T15 should be TOUCH")
+	}
+
+	r.src.program, r.src.busy, r.src.spindle = "O9023", true, 15
+	r.sheets.poll(context.Background(), "m1", false)
+	if s := r.sheets.Sheet("m1"); s.Program != "31011" {
+		t.Fatalf("a running macro must not replace the program: %q", s.Program)
+	}
+
+	r.src.program, r.src.busy, r.src.spindle = "MDI", false, 15
+	r.sheets.poll(context.Background(), "m1", false)
+	if s := r.sheets.Sheet("m1"); s.Program != "31011" {
+		t.Fatalf("MDI keeps the program in memory: %q", s.Program)
+	}
+	if got := r.status(15); got != cnc.StatusOK {
+		t.Fatalf("after the touch-off macro, same length: %s", got)
+	}
+	m, _, _ := cnc.LoadManifest(filepath.Join(r.ttDir, cnc.ManifestFileName))
+	if e, ok := m["15"]; !ok || e.LengthGeom != 8.4096 {
+		t.Fatalf("manifest T15: %+v", m["15"])
+	}
+}
+
+// Mid-cycle #4115 can name a subprogram; the job's program stays.
+func TestSetupSheetBusySubprogramKeepsProgram(t *testing.T) {
+	r := newSetupRig(t)
+	r.step()
+	r.src.program, r.src.busy = "O1234", true
+	r.step()
+	if s := r.sheets.Sheet("m1"); s.Program != "31011" {
+		t.Fatalf("busy subprogram replaced the program: %q", s.Program)
 	}
 }

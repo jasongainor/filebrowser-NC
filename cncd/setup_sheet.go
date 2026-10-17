@@ -30,8 +30,15 @@ import (
 const (
 	setupPollInterval = 60 * time.Second
 	setupFirstPoll    = 5 * time.Second
-	setupQueryTimeout = 10 * time.Second
-	setupReadTimeout  = 2 * time.Minute
+	// setupTick is how often the loaded program is asked (one Q500, plus
+	// #4115 mid-cycle): fast enough to catch a touch-off macro, which runs
+	// for tens of seconds. The rest of a poll runs every setupPollInterval.
+	setupTick = 5 * time.Second
+	// O09000-O09999 are macros (touch-off, probing), never the job's
+	// program. Job programs go well past them (31011).
+	macroFloor, macroCeil = 9000, 9999
+	setupQueryTimeout     = 10 * time.Second
+	setupReadTimeout      = 2 * time.Minute
 )
 
 // setupSource is the slice of *cnc.Streamer the sheet needs; a seam so
@@ -39,7 +46,8 @@ const (
 type setupSource interface {
 	IsRunning() bool
 	LinkUp() bool
-	LoadedProgram(ctx context.Context) (string, error)
+	ProgramState(ctx context.Context) (string, bool, error)
+	ToolInSpindle(ctx context.Context) (int, error)
 	ReadToolSlots(ctx context.Context, pockets []int) ([]cnc.ToolTableSlot, error)
 }
 
@@ -78,6 +86,13 @@ type setupMachine struct {
 	savedProgram  string
 	savedBaseline map[int]cnc.PocketGeom
 	baselineDirty bool
+
+	// A touch-off macro (O9000+) seen running, and the tools that were in
+	// the spindle while it ran. When it ends those pockets are recorded as
+	// touched off, even if the length came out the same.
+	inMacro    bool
+	macroTools map[int]bool
+	lastFull   time.Time
 }
 
 // setupState is what statePath holds.
@@ -163,9 +178,9 @@ func (s *SetupSheets) Run(ctx context.Context) {
 		case <-t.C:
 		}
 		for _, m := range s.d.Registry.Machines() {
-			s.Step(ctx, m.ID)
+			s.poll(ctx, m.ID, false)
 		}
-		t.Reset(setupPollInterval)
+		t.Reset(setupTick)
 	}
 }
 
@@ -208,27 +223,70 @@ func (s *SetupSheets) CheckedAt(machineID string) time.Time {
 	return time.Time{}
 }
 
-// Step runs one poll for a machine: loaded program, sidecar, partial
+// Step runs one full poll for a machine: loaded program, sidecar, partial
 // re-read of non-ok pockets, manifest recording.
-func (s *SetupSheets) Step(ctx context.Context, machineID string) {
+func (s *SetupSheets) Step(ctx context.Context, machineID string) { s.poll(ctx, machineID, true) }
+
+// poll asks the control for the loaded program every tick. A touch-off
+// macro running (busy, O9000+) only notes the tool in the spindle; the
+// full poll runs when forced, when a macro just ended, when the program
+// changed, or once a setupPollInterval.
+func (s *SetupSheets) poll(ctx context.Context, machineID string, force bool) {
 	src := s.src(machineID)
 	if src == nil || src.IsRunning() || !src.LinkUp() {
 		return
 	}
 	qctx, cancel := context.WithTimeout(ctx, setupQueryTimeout)
-	token, err := src.LoadedProgram(qctx)
+	token, busy, err := src.ProgramState(qctx)
 	cancel()
 	if err != nil {
 		log.Printf("cncd: setup sheet %s: Q500: %v", machineID, err)
 		return
 	}
 	number := cnc.LoadedProgramNumber(token)
-	tbl, _ := cncapiDepsFor(s.d).LatestToolTable(machineID)
+	n, _ := strconv.Atoi(number)
+	macro := n >= macroFloor && n <= macroCeil
 
+	if macro && busy {
+		qctx, cancel := context.WithTimeout(ctx, setupQueryTimeout)
+		tool, terr := src.ToolInSpindle(qctx)
+		cancel()
+		s.mu.Lock()
+		m := s.machineLocked(machineID)
+		if !m.inMacro {
+			log.Printf("cncd: setup sheet %s: macro O%s running", machineID, number)
+		}
+		m.inMacro = true
+		if m.macroTools == nil {
+			m.macroTools = map[int]bool{}
+		}
+		if terr == nil && tool > 0 && !m.macroTools[tool] {
+			m.macroTools[tool] = true
+			log.Printf("cncd: setup sheet %s: macro O%s with T%d in the spindle", machineID, number, tool)
+		}
+		s.mu.Unlock()
+		return
+	}
+
+	tbl, _ := cncapiDepsFor(s.d).LatestToolTable(machineID)
 	s.mu.Lock()
 	m := s.machineLocked(machineID)
+	// MDI, or a macro loaded but not running, leaves the job's program in
+	// memory; and mid-cycle #4115 can name a subprogram, while no new
+	// program can be loaded. Keep the program we have in those cases.
+	if number == "" || macro || (busy && m.program != "") {
+		number = m.program
+	}
+	touched := m.macroTools
+	ended := m.inMacro
+	m.inMacro, m.macroTools = false, nil
+	if !(force || ended || number != m.program || s.now().Sub(m.lastFull) >= setupPollInterval) {
+		s.mu.Unlock()
+		return
+	}
 	s.syncProgramLocked(machineID, m, number)
 	need := s.nonOKLocked(m, tbl)
+	need = append(need, s.touchedPocketsLocked(m, touched)...)
 	s.mu.Unlock()
 
 	var slots []cnc.ToolTableSlot
@@ -245,10 +303,62 @@ func (s *SetupSheets) Step(ctx context.Context, machineID string) {
 	defer s.mu.Unlock()
 	now := s.now()
 	m.checkedAt = now
+	m.lastFull = now
 	for _, sl := range slots {
 		m.overlay[sl.Slot] = overlaySlot{geom: cnc.GeomOf(sl), at: now}
 	}
+	s.recordTouchedLocked(machineID, m, tbl, now, touched)
 	s.recordLocked(machineID, m, tbl, now)
+}
+
+// touchedPocketsLocked is the program's floating pockets a macro touched
+// off, to re-read alongside the non-ok ones (duplicates are harmless).
+func (s *SetupSheets) touchedPocketsLocked(m *setupMachine, touched map[int]bool) []int {
+	if m.cards == nil || len(touched) == 0 {
+		return nil
+	}
+	var out []int
+	for _, t := range m.cards.ProgramTools() {
+		if touched[t.Number] && !cnc.IsFixedPocket(t.Number) {
+			out = append(out, t.Number)
+		}
+	}
+	return out
+}
+
+// recordTouchedLocked records each program tool a touch-off macro just
+// measured, at the length the machine now shows.
+func (s *SetupSheets) recordTouchedLocked(id string, m *setupMachine, tbl *cnc.ToolTable, now time.Time, touched map[int]bool) {
+	if m.cards == nil || len(touched) == 0 || !m.manifestOK {
+		return
+	}
+	dirty := false
+	for _, t := range m.cards.ProgramTools() {
+		p := t.Number
+		if !touched[p] || cnc.IsFixedPocket(p) {
+			continue
+		}
+		g := m.geomLocked(tbl, p)
+		if g == nil {
+			continue
+		}
+		l, ok := g.Length()
+		if !ok || l == 0 {
+			continue
+		}
+		m.manifest[strconv.Itoa(p)] = cnc.RecordFor(t, l, now.UTC().Format(time.RFC3339))
+		if _, flagged := m.baseline[p]; flagged {
+			delete(m.baseline, p)
+			m.baselineDirty = true
+		}
+		dirty = true
+		log.Printf("cncd: setup sheet %s: T%d touched off by macro, recorded as %s %.4f, length %.4f", id, p, t.Type, t.Diameter, l)
+	}
+	if dirty {
+		if err := m.manifest.Save(m.manifestPath); err != nil {
+			log.Printf("cncd: setup sheet %s: manifest save: %v", id, err)
+		}
+	}
 }
 
 // machineLocked returns the state for id, loading (and migrating) the
