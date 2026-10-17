@@ -224,8 +224,8 @@ To change one knob without re-prompting through everything, edit
 | `SHARE_PATH` | `~/cnc/files` | Regular folder the service serves (`--root` for cncd). Avoid spaces in the path. |
 | `IMAGE_PATH` | `~/cnc/cnc-usb.img` | FAT32 image exported as USB. Never mounted on the host. |
 | `IMAGE_SIZE_MB` | `4096` | 4 GB. Only used when creating a new image |
-| `WATCH_DEBOUNCE_SECONDS` | `8` | Quiet seconds before re-export |
-| `WATCH_MIN_INTERVAL_SECONDS` | `30` | Min gap between two re-exports |
+| `WATCH_DEBOUNCE_SECONDS` | `3` | Quiet seconds before re-export |
+| `WATCH_MIN_INTERVAL_SECONDS` | `10` | Min gap between two re-exports |
 | `CNCD_LISTEN` | `:8080` | cncd's listen address. |
 | `ENABLE_SERIAL` | `y` | Wire up the USB→RS-232 udev rule + seed `config.json`'s `serial.device` (cncd only). |
 | `SERIAL_LINK_NAME` | `ttyHAAS` | Stable `/dev/` name the udev rule creates. |

@@ -49,8 +49,14 @@ CONF=/etc/cnc-pi.conf
 
 : "${SHARE_PATH:?SHARE_PATH must be set in $CONF}"
 : "${IMAGE_PATH:?IMAGE_PATH must be set in $CONF}"
-WATCH_DEBOUNCE_SECONDS=${WATCH_DEBOUNCE_SECONDS:-8}
-WATCH_MIN_INTERVAL_SECONDS=${WATCH_MIN_INTERVAL_SECONDS:-30}
+WATCH_DEBOUNCE_SECONDS=${WATCH_DEBOUNCE_SECONDS:-3}
+WATCH_MIN_INTERVAL_SECONDS=${WATCH_MIN_INTERVAL_SECONDS:-10}
+
+# Paths that never reach the controller's attention: cncd's tool-table
+# dumps, manifest and setup-sheet state (written every few minutes), and
+# dot/temp files. Changes there must not unplug the stick from the Haas.
+WATCH_EXCLUDE='(/cnc-tool-tables(/|$)|/\.[^/]*$|\.tmp$)'
+
 FB_USER=${FB_USER:-}
 
 # mtools doesn't need geometry checks for our raw .img files.
@@ -59,6 +65,7 @@ export MTOOLS_SKIP_CHECK=1
 STATE_DIR=${RUNTIME_DIRECTORY:-/run/cnc-usb-watcher}
 mkdir -p "$STATE_DIR"
 LAST_EXPORT_FILE="$STATE_DIR/last_export"
+LAST_PRINT_FILE="$STATE_DIR/last_fingerprint"
 INHIBIT_UNTIL_FILE="$STATE_DIR/inhibit_until"
 # Persisted under /var/lib so deletes don't bounce after a reboot.
 SNAPSHOT_DIR=/var/lib/cnc-usb-watcher
@@ -70,6 +77,15 @@ read_epoch()  { [[ -r $1 ]] && cat "$1" || echo 0; }
 write_epoch() { printf '%s' "$1" > "$2"; }
 inhibit()     { write_epoch "$(( $(date +%s) + 5 ))" "$INHIBIT_UNTIL_FILE"; }
 inhibited()   { (( $(date +%s) < $(read_epoch "$INHIBIT_UNTIL_FILE") )); }
+
+# Content fingerprint of what the controller sees (paths + bytes, without
+# the excluded paths). macOS closes SMB files ~40 s after a post; that
+# close fires events but changes nothing, so a settle with the same
+# fingerprint as the last export is skipped instead of replugging.
+fingerprint() {
+  (cd "$SHARE_PATH" && find . -type f -not -path './cnc-tool-tables/*' -not -name '.*' -not -name '*.tmp' -print0 \
+    | sort -z | xargs -0 -r sha1sum) | sha1sum | cut -d' ' -f1
+}
 
 # Locate the LUN file. g_mass_storage exposes it under /sys/.../lun0/file.
 find_lun_file() {
@@ -187,6 +203,15 @@ reexport() {
     sleep "$wait_for"
   fi
 
+  local print
+  print=$(fingerprint)
+  if [[ -n ${FORCE_EXPORT:-} ]]; then
+    :
+  elif [[ $print == "$(cat "$LAST_PRINT_FILE" 2>/dev/null)" ]]; then
+    log "settle: share unchanged since the last export, stick stays attached"
+    return 0
+  fi
+
   inhibit
   log "settle: detaching LUN"
   printf '' > "$lun" || { log "WARN: detach write failed"; return 1; }
@@ -199,6 +224,7 @@ reexport() {
 
   printf '%s' "$IMAGE_PATH" > "$lun" || { log "WARN: reattach write failed"; return 1; }
   write_epoch "$(date +%s)" "$LAST_EXPORT_FILE"
+  printf '%s' "$print" > "$LAST_PRINT_FILE"
   log "settle: LUN reattached"
 }
 
@@ -225,11 +251,12 @@ fi
 # share folder + filebrowser UI both show files. schedule_reexport is
 # debounced + interval-bounded, so this is harmless on every restart.
 log "scheduling initial sync (so the controller sees the current share contents)"
-schedule_reexport
+FORCE_EXPORT=1 schedule_reexport
 
 log "watching $SHARE_PATH (debounce=${WATCH_DEBOUNCE_SECONDS}s, min-interval=${WATCH_MIN_INTERVAL_SECONDS}s)"
 
 inotifywait -m -r -q -e close_write -e create -e delete -e move -e attrib \
+            --exclude "$WATCH_EXCLUDE" \
             --format '%T %e %w%f' --timefmt '%H:%M:%S' \
             "$SHARE_PATH" \
 | while read -r line; do
