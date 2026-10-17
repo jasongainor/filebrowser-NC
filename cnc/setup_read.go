@@ -9,17 +9,46 @@ import (
 	"fmt"
 )
 
+// programMacroVar is the Haas modal O number (#4115). The control answers
+// Q600 for it mid-cycle, when Q500 only says "STATUS, BUSY".
+const programMacroVar = 4115
+
 // LoadedProgram asks the control which program is loaded (Q500) and returns
-// the raw program token ("O31011", "MDI", ...).
+// the raw program token ("O31011", "MDI", ...). While a cycle runs Q500
+// answers busy, so it falls back to macro #4115.
 func (s *Streamer) LoadedProgram(ctx context.Context) (string, error) {
-	res, err := s.Query(ctx, 500, nil)
-	if err != nil {
-		return "", err
+	return LoadedProgramVia(ctx, s.Query)
+}
+
+// LoadedProgramVia is LoadedProgram over any Q-code function (a seam for tests).
+func LoadedProgramVia(ctx context.Context, query func(context.Context, int, *int) (*QueryResult, error)) (string, error) {
+	res, err := query(ctx, 500, nil)
+	if err == nil && res.OK {
+		return extractProgram(&Metric{Parsed: res.Parsed, Value: res.Value}), nil
 	}
-	if !res.OK {
-		return "", fmt.Errorf("Q500: %s", res.Error)
+	q500 := err
+	if q500 == nil {
+		q500 = fmt.Errorf("Q500: %s", res.Error)
 	}
-	return extractProgram(&Metric{Parsed: res.Parsed, Value: res.Value}), nil
+	v := programMacroVar
+	mres, merr := query(ctx, 600, &v)
+	if merr != nil {
+		return "", fmt.Errorf("%v; #%d: %w", q500, v, merr)
+	}
+	if !mres.OK {
+		return "", fmt.Errorf("%v; #%d: %s", q500, v, mres.Error)
+	}
+	var n float64
+	switch x := mres.Parsed.(type) {
+	case float64:
+		n = x
+	case int:
+		n = float64(x)
+	}
+	if n <= 0 || n != float64(int(n)) {
+		return "", fmt.Errorf("%v; #%d: no program number in %q", q500, v, mres.Value)
+	}
+	return fmt.Sprintf("O%d", int(n)), nil
 }
 
 // ReadToolSlots reads length-geom, diameter-geom and diameter-wear for just
