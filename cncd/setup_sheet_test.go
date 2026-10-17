@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,7 +202,12 @@ func TestSetupSheetPartialReadClearsAndRecords(t *testing.T) {
 
 	// Partial reads never write a timestamped dump; the manifest does not
 	// shadow the dump as "latest".
-	files := r.dumpFiles()
+	var files []string
+	for _, f := range r.dumpFiles() {
+		if strings.HasSuffix(f, ".json") {
+			files = append(files, f)
+		}
+	}
 	if len(files) != 2 {
 		t.Fatalf("expected the one dump + manifest.json, got %v", files)
 	}
@@ -346,5 +352,42 @@ func TestSetupSheetCheckedAtIsTheLastPoll(t *testing.T) {
 	r.step()
 	if got := r.sheets.CheckedAt("m1"); !got.Equal(setupNow) {
 		t.Fatalf("CheckedAt = %v, want %v", got, setupNow)
+	}
+}
+
+// A deploy restarts cncd mid-setup. The "before" values survive, so a
+// touch-off made across the restart still clears the pocket.
+func TestSetupSheetBaselineSurvivesRestart(t *testing.T) {
+	r := newSetupRig(t)
+	r.src.live[15] = [2]float64{8.4096, 0.3758}
+	r.step()
+	if r.status(15) != cnc.StatusTouch {
+		t.Fatal("T15 should be TOUCH")
+	}
+
+	restarted := NewSetupSheets(r.d)
+	restarted.now = func() time.Time { return setupNow }
+	restarted.src = func(string) setupSource { return r.src }
+	r.src.live[15] = [2]float64{9.1234, 0.3758} // touched off while cncd was down
+	restarted.Step(context.Background(), "m1")
+	for _, tl := range restarted.Sheet("m1").Tools {
+		if tl.Pocket == 15 && tl.Status != cnc.StatusOK {
+			t.Fatalf("touch-off across a restart was lost: %s", tl.Status)
+		}
+	}
+}
+
+// Jason re-touched T18 and landed on the same length; he changed the
+// diameter offset. Any offset change is the touch-off.
+func TestTouchedOffOnDiameterChange(t *testing.T) {
+	ball := cnc.CardTool{Number: 18, Type: "ball end mill", Diameter: 0.1575}
+	l, d0, d1 := 3.4254, 0.1604, 0.1613
+	before := cnc.PocketGeom{LengthGeom: &l, DiameterGeom: &d0}
+	now := cnc.PocketGeom{LengthGeom: &l, DiameterGeom: &d1}
+	if !cnc.TouchedOff(ball, now, before) {
+		t.Fatal("a diameter offset change is a touch-off")
+	}
+	if cnc.TouchedOff(ball, before, before) {
+		t.Fatal("nothing changed")
 	}
 }

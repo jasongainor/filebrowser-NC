@@ -15,6 +15,7 @@ package cncd
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
@@ -69,6 +70,60 @@ type setupMachine struct {
 	// checkedAt is the last poll that read the loaded program: the time
 	// the sheet on the display is current as of.
 	checkedAt time.Time
+
+	// statePath keeps program + baseline across restarts, so a deploy
+	// mid-setup doesn't swallow a touch-off. A dot-file without .json so
+	// the dump listing never mistakes it for a tool table.
+	statePath     string
+	savedProgram  string
+	savedBaseline map[int]cnc.PocketGeom
+	baselineDirty bool
+}
+
+// setupState is what statePath holds.
+type setupState struct {
+	Program  string                    `json:"program"`
+	Baseline map[string]cnc.PocketGeom `json:"baseline"`
+}
+
+func (m *setupMachine) loadState() {
+	buf, err := os.ReadFile(m.statePath)
+	if err != nil {
+		return
+	}
+	var st setupState
+	if json.Unmarshal(buf, &st) != nil {
+		return
+	}
+	m.savedProgram = st.Program
+	m.savedBaseline = map[int]cnc.PocketGeom{}
+	for k, g := range st.Baseline {
+		if p, err := strconv.Atoi(k); err == nil {
+			m.savedBaseline[p] = g
+		}
+	}
+}
+
+func (m *setupMachine) saveState() {
+	if m.statePath == "" {
+		return
+	}
+	st := setupState{Program: m.program, Baseline: map[string]cnc.PocketGeom{}}
+	for p, g := range m.baseline {
+		st.Baseline[strconv.Itoa(p)] = g
+	}
+	buf, err := json.Marshal(st)
+	if err != nil {
+		return
+	}
+	tmp := m.statePath + ".tmp"
+	if err := os.WriteFile(tmp, buf, 0o644); err != nil {
+		log.Printf("cncd: setup sheet state: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, m.statePath); err != nil {
+		log.Printf("cncd: setup sheet state: %v", err)
+	}
 }
 
 // SetupSheets owns the setup-sheet state for every machine.
@@ -205,6 +260,8 @@ func (s *SetupSheets) machineLocked(id string) *setupMachine {
 	m := &setupMachine{overlay: map[int]overlaySlot{}, baseline: map[int]cnc.PocketGeom{}, manifest: cnc.Manifest{}}
 	if dir, err := cncapiDepsFor(s.d).ToolTableDirAbs(id); err == nil {
 		m.manifestPath = filepath.Join(dir, cnc.ManifestFileName)
+		m.statePath = filepath.Join(dir, ".setup-state")
+		m.loadState()
 		mf, migrated, err := cnc.LoadManifest(m.manifestPath)
 		switch {
 		case err != nil:
@@ -228,9 +285,19 @@ func (s *SetupSheets) machineLocked(id string) *setupMachine {
 func (s *SetupSheets) syncProgramLocked(id string, m *setupMachine, number string) {
 	if number != m.program {
 		log.Printf("cncd: setup sheet %s: loaded program %q -> %q", id, m.program, number)
+		restore := m.program == "" && number != "" && number == m.savedProgram
 		m.program = number
 		m.overlay = map[int]overlaySlot{}
 		m.baseline = map[int]cnc.PocketGeom{}
+		if restore {
+			// cncd restarted with this program still loaded: keep the
+			// "before" values so a touch-off made meanwhile still counts.
+			for p, g := range m.savedBaseline {
+				m.baseline[p] = g
+			}
+		}
+		m.savedProgram, m.savedBaseline = "", nil
+		m.baselineDirty = true
 		m.ncPath, m.sidecar, m.sidecarMod, m.cards = "", "", time.Time{}, nil
 	}
 	if number == "" {
@@ -352,6 +419,7 @@ func (s *SetupSheets) recordLocked(id string, m *setupMachine, tbl *cnc.ToolTabl
 			} else {
 				m.baseline[p] = cnc.PocketGeom{}
 			}
+			m.baselineDirty = true
 		case g != nil && (status == cnc.StatusOK || cnc.TouchedOff(t, *g, before)):
 			if l, ok := g.Length(); ok && l != 0 && m.manifestOK {
 				m.manifest[strconv.Itoa(p)] = cnc.RecordFor(t, l, now.UTC().Format(time.RFC3339))
@@ -359,12 +427,18 @@ func (s *SetupSheets) recordLocked(id string, m *setupMachine, tbl *cnc.ToolTabl
 				log.Printf("cncd: setup sheet %s: T%d set up as %s %.4f, length %.4f", id, p, t.Type, t.Diameter, l)
 			}
 			delete(m.baseline, p)
+			m.baselineDirty = true
 		}
 	}
 	for p := range m.baseline {
 		if !inProgram[p] {
 			delete(m.baseline, p)
+			m.baselineDirty = true
 		}
+	}
+	if m.baselineDirty {
+		m.saveState()
+		m.baselineDirty = false
 	}
 	if dirty {
 		if err := m.manifest.Save(m.manifestPath); err != nil {
