@@ -5,6 +5,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/filebrowser/filebrowser/v2/cnc"
 	"github.com/filebrowser/filebrowser/v2/cncapi"
 )
 
@@ -62,10 +63,18 @@ func (d Deps) displayFetchHandler(w http.ResponseWriter, r *http.Request) {
 
 	resolved := disp.Resolved()
 	resolved.Token = ""
+	sheet := d.Setup.Sheet(disp.MachineID)
+	// With a setup sheet up, "updated" is the last poll of the control,
+	// not the last full tool-table read (every 30 min).
+	if sheet.State != cnc.SheetNone {
+		if at := d.Setup.CheckedAt(disp.MachineID); !at.IsZero() {
+			payload.LastUpdatedDisplay = cnc.DisplayTime(at)
+		}
+	}
 	body := map[string]any{
 		"config": resolved,
 		"data":   payload,
-		"setup":  d.Setup.Sheet(disp.MachineID),
+		"setup":  sheet,
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	_ = renderJSON(w, body)

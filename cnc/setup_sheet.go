@@ -7,6 +7,7 @@ package cnc
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 )
 
@@ -64,6 +65,7 @@ func BuildSetupSheet(program string, cards *Cards, geom func(pocket int) *Pocket
 		}
 		s.Tools = append(s.Tools, st)
 	}
+	sort.SliceStable(s.Tools, func(i, j int) bool { return s.Tools[i].Pocket < s.Tools[j].Pocket })
 	return s
 }
 

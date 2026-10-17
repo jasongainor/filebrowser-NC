@@ -325,8 +325,9 @@ func TestDisplayPayloadCarriesSetupAndNewYorkTime(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	// Dump read_at is 2026-10-17T01:20:31Z = 21:20 the evening before in New York.
-	if body.Data.LastUpdatedDisplay != "2026-10-16 21:20" {
+	// With a sheet up, "updated" is the last poll (setupNow, 02:00Z), not
+	// the dump's read_at (01:20Z): 22:00 the evening before in New York.
+	if body.Data.LastUpdatedDisplay != "2026-10-16 22:00" {
 		t.Fatalf("display time %q", body.Data.LastUpdatedDisplay)
 	}
 	if len(body.Data.Pockets) == 0 {
@@ -334,5 +335,16 @@ func TestDisplayPayloadCarriesSetupAndNewYorkTime(t *testing.T) {
 	}
 	if body.Setup.State != cnc.SheetReady || len(body.Setup.Tools) != 2 || body.Setup.Tools[1].Shape == nil {
 		t.Fatalf("setup: %+v", body.Setup)
+	}
+}
+
+func TestSetupSheetCheckedAtIsTheLastPoll(t *testing.T) {
+	r := newSetupRig(t)
+	if !r.sheets.CheckedAt("m1").IsZero() {
+		t.Fatal("checked before the first poll")
+	}
+	r.step()
+	if got := r.sheets.CheckedAt("m1"); !got.Equal(setupNow) {
+		t.Fatalf("CheckedAt = %v, want %v", got, setupNow)
 	}
 }

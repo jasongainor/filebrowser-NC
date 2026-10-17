@@ -35,7 +35,8 @@ func TestPocketStatus(t *testing.T) {
 	}{
 		{"drill never recorded", drill, geom(5, 0.1), nil, StatusTouch},
 		{"drill recorded, same length", drill, geom(5.003, 9), rec("drill", 0.5, 5, ""), StatusOK},
-		{"drill length moved over .005", drill, geom(5.0061, 0.1), rec("drill", 0.5, 5, ""), StatusTouch},
+		{"drill length moved over .005 is touched off", drill, geom(5.0061, 0.1), rec("drill", 0.5, 5, ""), StatusOK},
+		{"other drill recorded but length moved since (T15 on 3104)", drill, geom(8.4096, 0.3758), rec("drill", 0.3125, 7.1422, ""), StatusOK},
 		{"drill recorded other diameter", drill, geom(5, 0.1), rec("drill", 0.4375, 5, ""), StatusSwap},
 		{"drill recorded other type", drill, geom(5, 0.1), rec("tap right hand", 0.5, 5, ""), StatusSwap},
 		{"drill machine diameter is ignored", drill, geom(5, 7.7), rec("drill", 0.5, 5, ""), StatusOK},
@@ -48,7 +49,7 @@ func TestPocketStatus(t *testing.T) {
 		{"mill uses wear", endmill, &PocketGeom{LengthGeom: f(4), DiameterGeom: f(0.24), DiameterWear: f(0.0105)}, nil, StatusOK},
 		{"mill empty", endmill, geom(0, 0.25), nil, StatusEmpty},
 		{"face mill 15 percent", face, geom(4, 3.3371), nil, StatusOK},
-		{"face mill beyond 15 percent", face, geom(4, 3.46), nil, StatusSwap}, // fixed? no: pocket 1 is fixed -> see below
+		{"fixed face mill beyond 15 percent is ERROR", face, geom(4, 3.46), nil, StatusError}, // pocket 1 is fixed
 		{"fixed mill matches", fixedMill, geom(4, 0.2504), nil, StatusOK},
 		{"fixed mill wrong tool is ERROR, never SWAP", fixedMill, geom(4, 0.3125), nil, StatusError},
 		{"fixed chamfer ok", chamfer, geom(3.7, 0.3772), nil, StatusOK},
@@ -57,9 +58,6 @@ func TestPocketStatus(t *testing.T) {
 		{"fixed spot drill needs no record", spotFixed, geom(3.7, 0), nil, StatusOK},
 		{"fixed pocket empty", fixedMill, geom(0, 0.25), nil, StatusEmpty},
 	}
-	// Pocket 1 is a fixed pocket, so the over-tolerance face mill is an ERROR.
-	cases[15].want = StatusError
-	cases[15].name = "fixed face mill beyond 15 percent is ERROR"
 	for _, c := range cases {
 		if got := PocketStatus(c.tool, c.g, c.rec); got != c.want {
 			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
