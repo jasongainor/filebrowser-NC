@@ -127,6 +127,19 @@ void drawStatus(const char *status, int x, int y, int w, int h) {
   display.setTextColor(GxEPD_BLACK);
 }
 
+// Status box for a list row: white on black, small bold font.
+void drawStatusSmall(const char *status, int x, int y, int w, int h) {
+  display.setFont(&FreeMonoBold9pt7b);
+  int16_t bx, by;
+  uint16_t bw, bh;
+  display.getTextBounds(status, 0, 0, &bx, &by, &bw, &bh);
+  display.fillRect(x, y, w, h, GxEPD_BLACK);
+  display.setTextColor(GxEPD_WHITE);
+  display.setCursor(x + (w - (int) bw) / 2, y + (h + (int) bh) / 2 - 1);
+  display.print(status);
+  display.setTextColor(GxEPD_BLACK);
+}
+
 // Word-wrapped text, up to max_lines lines. Returns the lines drawn.
 int drawWrapped(String text, int x, int y, int max_w, int line_h, int max_lines) {
   text.trim();
@@ -153,8 +166,19 @@ int drawWrapped(String text, int x, int y, int max_w, int line_h, int max_lines)
   return lines;
 }
 
-// 'I' and 'L' pages: "T12  1/2 drill        TOUCH". For 'I' only the rows
-// that are not ok, counted from p.first.
+// A drawn check mark in a w x h cell (the mono fonts have no glyph for it).
+void drawCheck(int x, int y, int w, int h) {
+  int s = min(w, h) - 8;
+  int x0 = x + (w - s) / 2, y0 = y + (h - s) / 2;
+  for (int d = 0; d < 3; d++) {
+    display.drawLine(x0, y0 + s / 2 + d, x0 + s / 3, y0 + s - 2 + d, GxEPD_BLACK);
+    display.drawLine(x0 + s / 3, y0 + s - 2 + d, x0 + s, y0 + d, GxEPD_BLACK);
+  }
+}
+
+// 'I' and 'L' pages: "T12  1/2 drill   4.2527  0.0604  [check]", the status
+// boxed instead of the check when not ok. For 'I' only the rows that are
+// not ok, counted from p.first.
 void renderSheetList(const SheetPage &p) {
   const int margin = 10;
   JsonArrayConst tools = payload_doc["setup"]["tools"];
@@ -165,8 +189,17 @@ void renderSheetList(const SheetPage &p) {
   String head = (p.kind == 'I') ? "FIX BEFORE RUN   " : "";
   head += "O" + String(program);
   if (title[0]) head += "  " + String(title);
+  // Column heads over the offsets, right of the title.
+  const int status_w = 76;
+  const int dia_w = 70, len_w = 80;
+  int dia_x = cfg.res_x - margin - status_w - dia_w;
+  int len_x = dia_x - len_w;
   display.setCursor(margin, 50 + 4 + 16);
-  display.print(fitToWidth(head, cfg.res_x - 2 * margin));
+  display.print(fitToWidth(head, len_x - margin - 8));
+  display.setCursor(len_x, 50 + 4 + 16);
+  display.print("LEN");
+  display.setCursor(dia_x, 50 + 4 + 16);
+  display.print("DIA");
 
   if (tools.isNull() || tools.size() == 0) {
     display.setFont(&FreeMono12pt7b);
@@ -177,7 +210,6 @@ void renderSheetList(const SheetPage &p) {
 
   int seen = 0;      // rows passed that count for this page kind
   int drawn = 0;
-  const int status_w = 120;
   for (JsonVariantConst v : tools) {
     JsonObjectConst t = v.as<JsonObjectConst>();
     bool ok = statusIsOk(t);
@@ -193,11 +225,19 @@ void renderSheetList(const SheetPage &p) {
     display.print(pocket);
 
     display.setFont(&FreeMono12pt7b);
-    display.setCursor(margin + 70, y + 24);
+    display.setCursor(margin + 56, y + 24);
     display.print(fitToWidth(String((const char *) (t["label"] | "")),
-                             cfg.res_x - margin - 70 - status_w - 20));
+                             len_x - margin - 56 - 8));
 
-    drawStatus(t["status"] | "ok", cfg.res_x - margin - status_w, y + 2, status_w, SHEET_ROW_H - 4);
+    display.setFont(&FreeMono9pt7b);
+    display.setCursor(len_x, y + 22);
+    display.print((const char *) (t["offset_length"] | "-"));
+    display.setCursor(dia_x, y + 22);
+    display.print((const char *) (t["offset_diameter"] | "-"));
+
+    int sx = cfg.res_x - margin - status_w;
+    if (ok) drawCheck(sx + status_w - SHEET_ROW_H, y, SHEET_ROW_H, SHEET_ROW_H);
+    else drawStatusSmall(t["status"] | "", sx, y + 3, status_w, SHEET_ROW_H - 6);
     display.drawLine(margin, y + SHEET_ROW_H - 1, cfg.res_x - margin, y + SHEET_ROW_H - 1, GxEPD_BLACK);
     drawn++;
   }

@@ -125,3 +125,14 @@ func TestReadSlotsViaAsksOnlyTheNeededVariables(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+func TestSetupSheetCarriesMachineOffsets(t *testing.T) {
+	cards := &Cards{Tools: []CardTool{{Number: 15, Type: "drill", Diameter: 0.421875}}}
+	length, dia := 8.4096, 0.3758
+	s := BuildSetupSheet("3104", cards,
+		func(int) *PocketGeom { return &PocketGeom{LengthGeom: &length, DiameterGeom: &dia} },
+		func(int) *ManifestEntry { return nil })
+	if len(s.Tools) != 1 || s.Tools[0].OffsetLength != "8.4096" || s.Tools[0].OffsetDiameter != "0.3758" {
+		t.Fatalf("%+v", s.Tools)
+	}
+}
