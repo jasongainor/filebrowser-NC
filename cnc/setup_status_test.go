@@ -44,16 +44,18 @@ func TestPocketStatus(t *testing.T) {
 		{"tap record without productId matches", tap, geom(4, 0), rec("tap right hand", 0.375, 4, ""), StatusOK},
 		{"length 0 is EMPTY", drill, geom(0, 0), nil, StatusEmpty},
 		{"nothing read is EMPTY", drill, nil, nil, StatusEmpty},
-		{"mill diameter within .012", endmill, geom(4, 0.2615), nil, StatusOK},
+		{"floating mill diameter within .012, recorded", endmill, geom(4, 0.2615), rec("flat end mill", 0.25, 4, ""), StatusOK},
+		{"floating mill never recorded is TOUCH, diameter alone proves nothing", endmill, geom(4, 0.2615), nil, StatusTouch},
+		{"T16 on 3104: ball wanted, drill recorded, .25 offset left on it", CardTool{Number: 16, Type: "ball end mill", Diameter: 0.25}, geom(5.1, 0.25), rec("drill", 0.25, 5.1, ""), StatusSwap},
 		{"mill diameter off", endmill, geom(4, 0.2681), nil, StatusSwap},
-		{"mill uses wear", endmill, &PocketGeom{LengthGeom: f(4), DiameterGeom: f(0.24), DiameterWear: f(0.0105)}, nil, StatusOK},
+		{"mill uses wear", endmill, &PocketGeom{LengthGeom: f(4), DiameterGeom: f(0.24), DiameterWear: f(0.0105)}, rec("flat end mill", 0.25, 4, ""), StatusOK},
 		{"mill empty", endmill, geom(0, 0.25), nil, StatusEmpty},
 		{"face mill 15 percent", face, geom(4, 3.3371), nil, StatusOK},
 		{"fixed face mill beyond 15 percent is ERROR", face, geom(4, 3.46), nil, StatusError}, // pocket 1 is fixed
 		{"fixed mill matches", fixedMill, geom(4, 0.2504), nil, StatusOK},
 		{"fixed mill wrong tool is ERROR, never SWAP", fixedMill, geom(4, 0.3125), nil, StatusError},
 		{"fixed chamfer ok", chamfer, geom(3.7, 0.3772), nil, StatusOK},
-		{"floating chamfer matched like a mill", floatChamfer, geom(3.7, 0.3772), nil, StatusOK},
+		{"floating chamfer matched like a mill, recorded", floatChamfer, geom(3.7, 0.3772), rec("chamfer mill", 0.375, 3.7, ""), StatusOK},
 		{"floating chamfer wrong is SWAP", floatChamfer, geom(3.7, 0.5), nil, StatusSwap},
 		{"fixed spot drill needs no record", spotFixed, geom(3.7, 0), nil, StatusOK},
 		{"fixed pocket empty", fixedMill, geom(0, 0.25), nil, StatusEmpty},
@@ -78,8 +80,8 @@ func TestTouchedOff(t *testing.T) {
 	if TouchedOff(drill, *geom(0, 0), before) {
 		t.Error("length 0 is not a touch-off")
 	}
-	if TouchedOff(endmill, *geom(5.4, 0.25), before) {
-		t.Error("mills leave the flagged state on diameter, not TouchedOff")
+	if !TouchedOff(endmill, *geom(5.4, 0.25), before) {
+		t.Error("a floating mill's new length is a touch-off too")
 	}
 }
 

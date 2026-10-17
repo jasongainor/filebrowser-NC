@@ -219,10 +219,15 @@ func PocketStatus(t CardTool, geom *PocketGeom, rec *ManifestEntry) string {
 			}
 			return StatusSwap
 		}
-		return StatusOK
+		if fixed {
+			return StatusOK
+		}
+		// A floating pocket: a matching diameter offset proves nothing (a
+		// drill left in T16 with a .25 offset read as the 1/4 ball). Fall
+		// through to the recorded identity like a drill.
 	}
-	// Drills, taps, reamers, spot drills: trusted by recorded identity and
-	// length. A standing tool in a fixed pocket needs no record.
+	// Floating pockets are trusted by recorded identity and length. A
+	// standing tool in a fixed pocket needs no record.
 	if fixed {
 		return StatusOK
 	}
@@ -241,20 +246,16 @@ func PocketStatus(t CardTool, geom *PocketGeom, rec *ManifestEntry) string {
 	return StatusOK
 }
 
-// RecordStale reports whether a drill/tap pocket's recorded length no
+// RecordStale reports whether a floating pocket's recorded length no
 // longer matches the machine (moved more than LengthTol).
 func RecordStale(t CardTool, length float64, rec *ManifestEntry) bool {
-	return rec != nil && !UsesDiameter(t) && math.Abs(length-rec.LengthGeom) > LengthTol
+	return rec != nil && math.Abs(length-rec.LengthGeom) > LengthTol
 }
 
-// TouchedOff reports whether a drill, tap or similar shows a new non-zero
-// length now than it did (before) when its pocket was first flagged: the
-// operator touched it off. Milling tools need no such test: they leave the
-// flagged state by matching on diameter, which PocketStatus already sees.
+// TouchedOff reports whether a floating pocket shows a new non-zero length
+// now than it did (before) when it was first flagged: the operator touched
+// it off.
 func TouchedOff(t CardTool, now, before PocketGeom) bool {
-	if UsesDiameter(t) {
-		return false
-	}
 	l, ok := now.Length()
 	if !ok || l == 0 {
 		return false
