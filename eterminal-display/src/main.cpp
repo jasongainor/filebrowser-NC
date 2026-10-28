@@ -132,6 +132,7 @@ String last_updated_display = "";
 int computeTotalPages();
 bool sheetActive();       // setup_sheet.h
 bool setupNoJson();
+int setupAlertCount();
 int sheetTotalPages();
 void renderSheetPage();
 void sheetRememberPage();
@@ -142,6 +143,18 @@ int periodic_full_refresh_at_page = 0;   // for ghosting purge
 // In-memory payload from the last good fetch (or SD cache fallback).
 // We keep the full JSON tree so paging is zero-network.
 JsonDocument payload_doc;
+
+// Parse filter: keep everything except the per-tool silhouettes inside
+// setup.groups[].tools[]. Groups render as lists only (the silhouettes are
+// drawn from the top-level setup.tools), and a ~6-group payload would
+// otherwise hold every shape polyline twice in heap.
+void buildPayloadFilter(JsonDocument &f) {
+  f["*"] = true;
+  f["setup"]["*"] = true;
+  f["setup"]["groups"][0]["*"] = true;
+  f["setup"]["groups"][0]["tools"][0]["*"] = true;
+  f["setup"]["groups"][0]["tools"][0]["shape"] = false;
+}
 
 // ─── Logging helper ──────────────────────────────────────────────────
 void logf(const char *fmt, ...) {
@@ -192,7 +205,9 @@ bool loadConfigFromSD() {
 bool loadCacheFromSD() {
   File f = SD.open(CACHE_PATH);
   if (!f) return false;
-  DeserializationError err = deserializeJson(payload_doc, f);
+  JsonDocument filter;
+  buildPayloadFilter(filter);
+  DeserializationError err = deserializeJson(payload_doc, f, DeserializationOption::Filter(filter));
   f.close();
   if (err) {
     logf("SD: cache parse error: %s", err.c_str());
@@ -339,8 +354,9 @@ bool fetchPayload() {
   String body = http.getString();
   http.end();
 
-  JsonDocument fresh;
-  DeserializationError err = deserializeJson(fresh, body);
+  JsonDocument fresh, filter;
+  buildPayloadFilter(filter);
+  DeserializationError err = deserializeJson(fresh, body, DeserializationOption::Filter(filter));
   if (err) {
     logf("HTTP: payload parse error: %s", err.c_str());
     return false;
@@ -385,6 +401,13 @@ void renderStatusBar(int top_y) {
   if (setupNoJson()) {
     display.setCursor(8, top_y + 44);
     display.print("no JSON");
+  }
+  // Cross-program alerts: the count, bold, where the "no JSON" note goes.
+  if (sheetActive() && setupAlertCount() > 0) {
+    display.setFont(&FreeMonoBold9pt7b);
+    display.setCursor(8, top_y + 44);
+    display.print(String(setupAlertCount()) + (setupAlertCount() == 1 ? " ALERT" : " ALERTS"));
+    display.setFont(&FreeMono9pt7b);
   }
 
   int total_pages = computeTotalPages();
