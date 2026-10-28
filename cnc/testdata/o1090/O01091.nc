@@ -1,0 +1,35 @@
+%
+O01091 (OP0 PROBE - G154 P95 - A13.392)
+N10 (P95 X = PART CENTER, Y Z = TOP FACE CENTER)
+N20 #128= 13.392
+N30 #3= 0.118 (STYLUS BALL RADIUS)
+N40 #6= #121 / 2 - #126 (HALF WIDTH)
+N50 #7= [#15843 - #15863] / 2 (A AXIS Y FROM PART CENTER)
+N60 (front edge in P92 at A#128)
+N70 #4= [#15783 - #15823 - #124] * SIN[#128] - #6 * COS[#128]
+N80 #5= [#15783 - #15823 - #124] * [1 - COS[#128]] - #6 * SIN[#128]
+
+N90 M06 G43 T20 D20 H20
+N100 G53 G00 Z0.
+N110 #15884= #15784 + #128 (P95 A = P90 A + #128)
+N120 (rotate a axis)
+N130 G154 P95 G00 A0.
+
+N140 (y on front edge, ball center at edge height)
+N150 G154 P92 G00 X0. Y[#4 - 0.5]
+N160 G00 Z[#5 - #3]
+N170 G65 P9995 W154.95 A20. E1.
+N180 #131= #15882 (EDGE Y)
+
+N190 (face center y z from edge y)
+N200 #15882= #131 + #6 * COS[#128]
+N210 #8= #15882 - #15822 (CENTER Y IN P92)
+N220 #15883= #15823 + [#8 - #7 * [1 - COS[#128]]] * TAN[#128 / 2] - #7 * SIN[#128]
+
+N230 (x web at face center)
+N240 G154 P95 G00 Z0.125
+N250 G00 Y0.
+N260 G65 P9995 W154.95 A14. D[#120 - 2 * #126]
+N270 G53 G00 Z0.
+N280 M99
+%

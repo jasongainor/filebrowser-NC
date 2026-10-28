@@ -1,0 +1,85 @@
+{
+ "schema": "gmw-nc-cards/1",
+ "program": {
+  "name": "2003",
+  "comment": "",
+  "unit": "in"
+ },
+ "tools": [
+  {
+   "number": 4,
+   "description": "HELICAL - 81608 - 45 DEG HELIX CORNER RADIUS END MILL FOR ALUMINUM - 0.3750 (3/8) DIA X 0.3750 (3/8) SHANK DIA X 0.0600 RADIUS X 1.0000 (1) LOC X 3.0000 (3) OAL , 3 FLUTES, ZPLUS COATED",
+   "type": "bullnose end mill",
+   "vendor": "HELICAL SOLUTIONS",
+   "productId": "81608",
+   "diameter": 0.37499999999999994,
+   "cornerRadius": 0.05999999999999999,
+   "taperAngle": 0,
+   "flutes": 3,
+   "fluteLength": 0.9999999999999999,
+   "bodyLength": 1.9174999999999998,
+   "holder": "CAT40 ER16 COLLET CHUCK X 4\" GAGE LENGTH",
+   "isDrill": false
+  },
+  {
+   "number": 10,
+   "description": "HELICAL - 81586 - 45 DEG HELIX CORNER RADIUS END MILL FOR ALUMINUM - 0.1250 (1/8) DIA X 0.1250 (1/8) SHANK DIA X 0.0100 RADIUS X 0.5000 (1/2) LOC X 2.5000 (2-1/2) OAL , 3 FLUTES, ZPLUS COATED",
+   "type": "flat end mill",
+   "vendor": "HELICAL SOLUTIONS",
+   "productId": "81586",
+   "diameter": 0.12499999999999999,
+   "cornerRadius": 0,
+   "taperAngle": 0,
+   "flutes": 3,
+   "fluteLength": 0.49999999999999994,
+   "bodyLength": 0.8749999999999999,
+   "holder": "1/8\u201d Shrink Fit CAT40 end mill holder G2.5",
+   "isDrill": false
+  },
+  {
+   "number": 13,
+   "description": "Harvey 0.035\" 3F Flat",
+   "type": "flat end mill",
+   "vendor": "HARVEY TOOL",
+   "productId": "823035",
+   "diameter": 0.035,
+   "cornerRadius": 0,
+   "taperAngle": 0,
+   "flutes": 3,
+   "fluteLength": 0.052,
+   "bodyLength": 0.19244,
+   "holder": "CAT40 ER16 COLLET CHUCK X 2-1/2\" GAGE LENGTH",
+   "isDrill": false
+  },
+  {
+   "number": 18,
+   "description": "4mm ball aluminum ",
+   "type": "ball end mill",
+   "vendor": "",
+   "productId": "",
+   "diameter": 0.15748000000000004,
+   "cornerRadius": 0.07874000000000002,
+   "taperAngle": 0,
+   "flutes": 4,
+   "fluteLength": 0.7499999999999999,
+   "bodyLength": 0.9999999999999998,
+   "holder": "CAT40 ER25",
+   "isDrill": false
+  },
+  {
+   "number": 14,
+   "description": "",
+   "type": "chamfer mill",
+   "vendor": "Haas",
+   "productId": "03-0620",
+   "diameter": 0.37499999999999994,
+   "cornerRadius": 0,
+   "taperAngle": 0.7853981633974483,
+   "flutes": 2,
+   "fluteLength": 0.7499999999999999,
+   "bodyLength": 1.4999999999999998,
+   "holder": "3/8\u201d Shrink Fit CAT40 end mill holder G3.15",
+   "isDrill": false
+  }
+ ]
+}

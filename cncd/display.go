@@ -72,7 +72,7 @@ func (d Deps) displayFetchHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if sheet.State == cnc.SheetReady {
-		sheet.QR = d.setupQR(sheet.Program, r.Host)
+		sheet.QR = d.setupQR(sheet.QRProgram, sheet.Program, r.Host)
 	}
 	body := map[string]any{
 		"config": resolved,
