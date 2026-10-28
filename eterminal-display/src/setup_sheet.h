@@ -3,8 +3,8 @@
 // main.cpp's globals (display, cfg, payload_doc, current_page, logf).
 //
 // Pages, in order. When the payload has "groups" (a main program that calls
-// subprograms) the order is A, G..., T and the flat I/L pages are not built;
-// with no "groups" it is I, L, T exactly as before.
+// subprograms) the order is A, I, G..., T (the flat L list is replaced by the
+// group pages); with no "groups" it is I, L, T exactly as before.
 //   'A'  ALERTS - cross-program alerts (absent when there are none)
 //   'G'  one program of the call tree: its tools, with state and call count,
 //        the running program marked
@@ -182,13 +182,13 @@ void buildSheetPages() {
   JsonArrayConst tools = payload_doc["setup"]["tools"];
   int n = tools.isNull() ? 0 : (int) tools.size();
   packAlertPages();
+  packSheetPages('I', true, tools);
   if (hasGroups()) {
     JsonArrayConst groups = setupGroups();
     for (int g = 0; g < (int) groups.size(); g++) {
       packSheetPages('G', false, groups[g]["tools"].as<JsonArrayConst>(), g, g * 100);
     }
   } else {
-    packSheetPages('I', true, tools);
     packSheetPages('L', false, tools);
   }
 
