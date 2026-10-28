@@ -50,7 +50,41 @@ type SetupSheet struct {
 	Tools   []SetupTool `json:"tools,omitempty"`
 	// QR opens the program's setup sheet; nil when it has none.
 	QR *SheetQR `json:"qr,omitempty"`
+	// Groups are the programs of the call tree, the loaded program first,
+	// then each called program in call order. Tools above is their deduped
+	// union. Alerts are what disagrees across them.
+	Groups []SetupGroup `json:"groups,omitempty"`
+	Alerts []SetupAlert `json:"alerts,omitempty"`
+	// QRProgram is the program the QR opens ("" when none has a sheet).
+	QRProgram string `json:"-"`
 }
+
+// SetupGroup is one program of the call tree.
+type SetupGroup struct {
+	Program string      `json:"program"`
+	Title   string      `json:"title,omitempty"`
+	State   string      `json:"state"` // sheet, nojson or missing
+	Calls   int         `json:"calls"`
+	Running bool        `json:"running,omitempty"`
+	Next    bool        `json:"next,omitempty"`
+	Tools   []SetupTool `json:"tools,omitempty"`
+}
+
+// SetupAlert is one thing the operator has to look at. Pocket is 0 when
+// the alert is about a program, not a pocket.
+type SetupAlert struct {
+	Kind     string   `json:"kind"`
+	Pocket   int      `json:"pocket,omitempty"`
+	Programs []string `json:"programs,omitempty"`
+	Detail   string   `json:"detail,omitempty"`
+}
+
+// RunPos says which group of the tree is running, and which runs next
+// (stopped between calls). -1 is unknown.
+type RunPos struct{ Running, Next int }
+
+// NoRunPos knows neither.
+var NoRunPos = RunPos{Running: -1, Next: -1}
 
 // SheetQR is a QR code as rows of hex, most significant bit first, one
 // bit per module, no quiet zone; len(Rows) modules square.
@@ -71,40 +105,129 @@ func BuildSetupSheet(program string, cards *Cards, geom func(pocket int) *Pocket
 	}
 	s := SetupSheet{State: SheetReady, Program: program, Title: asciiOnly(cards.Comment)}
 	for _, t := range cards.ProgramTools() {
-		shape := BuildShape(t)
-		st := SetupTool{
-			Pocket:      t.Number,
-			Status:      PocketStatus(t, geom(t.Number), rec(t.Number)),
-			Label:       ToolLabel(t),
-			Type:        asciiOnly(t.Type),
-			Description: asciiOnly(t.Description),
-			Holder:      asciiOnly(t.Holder),
-			Shape:       &shape,
-		}
-		if UsesDiameter(t) {
-			st.Diameter = fmt.Sprintf("%.4f", t.Diameter)
-		}
-		if g := geom(t.Number); g != nil {
-			if l, ok := g.Length(); ok {
-				st.OffsetLength = fmt.Sprintf("%.4f", l)
-			}
-			if g.DiameterGeom != nil {
-				st.OffsetDiameter = fmt.Sprintf("%.4f", *g.DiameterGeom)
-			}
-			st.WearLength = wearText(g.LengthWear)
-			st.WearDiameter = wearText(g.DiameterWear)
-		}
-		if st.Status != StatusOK {
-			if DiameterOff(t, geom(t.Number)) {
-				st.ExpectedDiameter = fmt.Sprintf("%.4f", t.Diameter)
-			}
-			if r := rec(t.Number); r != nil && r.Same(IdentityOf(t)) {
-				st.ExpectedLength = fmt.Sprintf("%.4f", r.LengthGeom)
-			}
-		}
-		s.Tools = append(s.Tools, st)
+		s.Tools = append(s.Tools, buildTool(t, geom, rec))
 	}
 	sort.SliceStable(s.Tools, func(i, j int) bool { return s.Tools[i].Pocket < s.Tools[j].Pocket })
+	return s
+}
+
+// buildTool is one sidecar tool's row, with today's per-pocket status.
+func buildTool(t CardTool, geom func(pocket int) *PocketGeom, rec func(pocket int) *ManifestEntry) SetupTool {
+	shape := BuildShape(t)
+	st := SetupTool{
+		Pocket:      t.Number,
+		Status:      PocketStatus(t, geom(t.Number), rec(t.Number)),
+		Label:       ToolLabel(t),
+		Type:        asciiOnly(t.Type),
+		Description: asciiOnly(t.Description),
+		Holder:      asciiOnly(t.Holder),
+		Shape:       &shape,
+	}
+	if UsesDiameter(t) {
+		st.Diameter = fmt.Sprintf("%.4f", t.Diameter)
+	}
+	addOffsets(&st, geom(t.Number))
+	if st.Status != StatusOK {
+		if DiameterOff(t, geom(t.Number)) {
+			st.ExpectedDiameter = fmt.Sprintf("%.4f", t.Diameter)
+		}
+		if r := rec(t.Number); r != nil && r.Same(IdentityOf(t)) {
+			st.ExpectedLength = fmt.Sprintf("%.4f", r.LengthGeom)
+		}
+	}
+	return st
+}
+
+// addOffsets fills the machine's offsets for the pocket.
+func addOffsets(st *SetupTool, g *PocketGeom) {
+	if g == nil {
+		return
+	}
+	if l, ok := g.Length(); ok {
+		st.OffsetLength = fmt.Sprintf("%.4f", l)
+	}
+	if g.DiameterGeom != nil {
+		st.OffsetDiameter = fmt.Sprintf("%.4f", *g.DiameterGeom)
+	}
+	st.WearLength = wearText(g.LengthWear)
+	st.WearDiameter = wearText(g.DiameterWear)
+}
+
+// StatusNoJSON marks a pocket read from the NC: no sidecar, so its tool is
+// not known and its size is not checked.
+const StatusNoJSON = "nojson"
+
+// BuildTreeSheet assembles the sheet for a call tree: one group per
+// program, the deduped union as the flat Tools, and the alerts. pos says
+// which group runs, and which runs next.
+func BuildTreeSheet(tree *ProgramTree, geom func(pocket int) *PocketGeom, rec func(pocket int) *ManifestEntry, pos RunPos) SetupSheet {
+	main := tree.Main()
+	s := SetupSheet{State: SheetNoJSON, Program: main.Number, Title: main.Title}
+	hasTools := false
+	for gi, g := range tree.Groups {
+		sg := SetupGroup{Program: g.Number, Title: g.Title, State: g.State, Calls: g.Calls,
+			Running: gi == pos.Running, Next: gi == pos.Next}
+		if g.Cards != nil {
+			for _, t := range g.Tools() {
+				sg.Tools = append(sg.Tools, buildTool(t, geom, rec))
+			}
+		} else {
+			for _, p := range g.Pockets {
+				st := SetupTool{Pocket: p, Status: StatusNoJSON, Label: fmt.Sprintf("T%d", p)}
+				addOffsets(&st, geom(p))
+				sg.Tools = append(sg.Tools, st)
+			}
+		}
+		hasTools = hasTools || len(sg.Tools) > 0
+		s.Groups = append(s.Groups, sg)
+	}
+	if hasTools || main.Cards != nil {
+		s.State = SheetReady
+	}
+
+	// The flat list: sidecar tools first (deduped by pocket + identity),
+	// then NC-only pockets nobody else covers.
+	have := map[int]bool{}
+	var kept []CardTool
+	for _, tt := range tree.UniqueTools() {
+		// Two programs may name one tool differently (a vendor product id);
+		// the flat list shows the pocket once when type and diameter agree.
+		dup := false
+		for _, k := range kept {
+			if k.Number == tt.Number && strings.EqualFold(strings.TrimSpace(k.Type), strings.TrimSpace(tt.Type)) &&
+				absf(k.Diameter-tt.Diameter) <= identityDiaTol {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
+		kept = append(kept, tt.CardTool)
+		s.Tools = append(s.Tools, s.Groups[tt.Group].Tools[tt.Index])
+		have[tt.Number] = true
+	}
+	for _, g := range s.Groups {
+		for _, st := range g.Tools {
+			if st.Status == StatusNoJSON && !have[st.Pocket] {
+				have[st.Pocket] = true
+				s.Tools = append(s.Tools, st)
+			}
+		}
+	}
+	sort.SliceStable(s.Tools, func(i, j int) bool { return s.Tools[i].Pocket < s.Tools[j].Pocket })
+
+	s.Alerts = append(s.Alerts, tree.Alerts...)
+	if pos.Next >= 0 && pos.Next < len(s.Groups) {
+		g := s.Groups[pos.Next]
+		for _, st := range g.Tools {
+			if st.Status != StatusNoJSON && st.Status != StatusOK {
+				s.Alerts = append(s.Alerts, SetupAlert{Kind: st.Status, Pocket: st.Pocket, Programs: []string{"O" + g.Program},
+					Detail: fmt.Sprintf("T%d %s is %s for O%s", st.Pocket, st.Label, st.Status, g.Program)})
+			}
+		}
+	}
+	s.QRProgram = tree.QRProgram()
 	return s
 }
 

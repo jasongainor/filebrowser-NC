@@ -58,11 +58,17 @@ type overlaySlot struct {
 
 // setupMachine is the per-machine state.
 type setupMachine struct {
-	program    string
-	ncPath     string
-	sidecar    string
-	sidecarMod time.Time
-	cards      *cnc.Cards
+	program string
+	// tree is the loaded program and everything it calls, rebuilt when the
+	// program changes or any member file does.
+	tree *cnc.ProgramTree
+
+	// Where the cycle is, from the program the control reports: the group
+	// running now (busy, #4115 names a called program), the group that runs
+	// next (stopped between calls), and the last program seen running. -1
+	// is unknown.
+	runIdx, nextIdx int
+	lastRan         string
 
 	// overlay holds partial reads, newer than the last full dump; they are
 	// never written out as dump files.
@@ -244,6 +250,7 @@ func (s *SetupSheets) poll(ctx context.Context, machineID string, force bool) {
 		return
 	}
 	number := cnc.LoadedProgramNumber(token)
+	reported := number
 	n, _ := strconv.Atoi(number)
 	macro := n >= macroFloor && n <= macroCeil
 
@@ -277,6 +284,7 @@ func (s *SetupSheets) poll(ctx context.Context, machineID string, force bool) {
 	if number == "" || macro || (busy && m.program != "") {
 		number = m.program
 	}
+	m.updatePosLocked(reported, busy)
 	touched := m.macroTools
 	ended := m.inMacro
 	m.inMacro, m.macroTools = false, nil
@@ -314,13 +322,13 @@ func (s *SetupSheets) poll(ctx context.Context, machineID string, force bool) {
 // touchedPocketsLocked is the program's floating pockets a macro touched
 // off, to re-read alongside the non-ok ones (duplicates are harmless).
 func (s *SetupSheets) touchedPocketsLocked(m *setupMachine, touched map[int]bool) []int {
-	if m.cards == nil || len(touched) == 0 {
+	if len(touched) == 0 {
 		return nil
 	}
 	var out []int
-	for _, t := range m.cards.ProgramTools() {
-		if touched[t.Number] && !cnc.IsFixedPocket(t.Number) {
-			out = append(out, t.Number)
+	for _, pk := range m.picksLocked() {
+		if touched[pk.tool.Number] && !cnc.IsFixedPocket(pk.tool.Number) {
+			out = append(out, pk.tool.Number)
 		}
 	}
 	return out
@@ -329,13 +337,18 @@ func (s *SetupSheets) touchedPocketsLocked(m *setupMachine, touched map[int]bool
 // recordTouchedLocked records each program tool a touch-off macro just
 // measured, at the length the machine now shows.
 func (s *SetupSheets) recordTouchedLocked(id string, m *setupMachine, tbl *cnc.ToolTable, now time.Time, touched map[int]bool) {
-	if m.cards == nil || len(touched) == 0 || !m.manifestOK {
+	if len(touched) == 0 || !m.manifestOK {
 		return
 	}
 	dirty := false
-	for _, t := range m.cards.ProgramTools() {
+	for _, pk := range m.picksLocked() {
+		t := pk.tool
 		p := t.Number
 		if !touched[p] || cnc.IsFixedPocket(p) {
+			continue
+		}
+		if pk.skip != "" {
+			log.Printf("cncd: setup sheet %s: T%d touched off by macro, not recorded: %s", id, p, pk.skip)
 			continue
 		}
 		g := m.geomLocked(tbl, p)
@@ -367,7 +380,7 @@ func (s *SetupSheets) machineLocked(id string) *setupMachine {
 	if m := s.ms[id]; m != nil {
 		return m
 	}
-	m := &setupMachine{overlay: map[int]overlaySlot{}, baseline: map[int]cnc.PocketGeom{}, manifest: cnc.Manifest{}}
+	m := &setupMachine{runIdx: -1, nextIdx: -1, overlay: map[int]overlaySlot{}, baseline: map[int]cnc.PocketGeom{}, manifest: cnc.Manifest{}}
 	if dir, err := cncapiDepsFor(s.d).ToolTableDirAbs(id); err == nil {
 		m.manifestPath = filepath.Join(dir, cnc.ManifestFileName)
 		m.statePath = filepath.Join(dir, ".setup-state")
@@ -408,33 +421,99 @@ func (s *SetupSheets) syncProgramLocked(id string, m *setupMachine, number strin
 		}
 		m.savedProgram, m.savedBaseline = "", nil
 		m.baselineDirty = true
-		m.ncPath, m.sidecar, m.sidecarMod, m.cards = "", "", time.Time{}, nil
+		m.tree = nil
+		m.lastRan, m.runIdx, m.nextIdx = "", -1, -1
 	}
 	if number == "" {
 		return
 	}
-	pf, err := cnc.FindProgramFile(s.d.Root, number)
-	if err != nil || pf == nil || pf.Sidecar == "" {
-		m.ncPath, m.sidecar, m.sidecarMod, m.cards = "", "", time.Time{}, nil
+	// Subprograms are reposted while the main stays loaded: rebuild when
+	// any member file changed. Parsing is cached by path + mtime.
+	if m.tree == nil || m.tree.Stale() {
+		m.tree = cnc.BuildProgramTree(s.d.Root, number)
+		for _, g := range m.tree.Groups {
+			if g.State == cnc.SheetNoJSON && g.File != nil && g.Cards == nil && g.File.Sidecar != "" {
+				log.Printf("cncd: setup sheet %s: O%s: sidecar unreadable", id, g.Number)
+			}
+		}
+	}
+}
+
+// updatePosLocked works out which group of the tree is running, or runs
+// next, from the program number the control reports (reported) and
+// whether it is busy.
+func (m *setupMachine) updatePosLocked(reported string, busy bool) {
+	m.runIdx, m.nextIdx = -1, -1
+	if m.tree == nil {
 		return
 	}
-	info, err := os.Stat(pf.Sidecar)
-	if err != nil {
-		m.cards = nil
-		return
+	idx := m.tree.Index(reported)
+	switch {
+	case idx > 0 && busy:
+		m.runIdx, m.lastRan = idx, reported
+	case idx == 0 && m.lastRan != "":
+		// the main itself: stopped between calls
+		if li := m.tree.Index(m.lastRan); li >= 0 && li+1 < len(m.tree.Groups) {
+			m.nextIdx = li + 1
+		}
 	}
-	if pf.NC == m.ncPath && pf.Sidecar == m.sidecar && info.ModTime().Equal(m.sidecarMod) && m.cards != nil {
-		return
+}
+
+// pick is the one tool a pocket is checked and recorded as. skip, when
+// set, says why a touch-off on the pocket cannot be recorded.
+type pick struct {
+	tool cnc.CardTool
+	skip string
+}
+
+// picksLocked lists each of the tree's pockets once. A pocket with a
+// CONFLICT is recorded against one group only: the running one, else the
+// one that runs next, else (nothing seen running yet) the first that uses
+// it; otherwise it is skipped.
+func (m *setupMachine) picksLocked() []pick {
+	if m.tree == nil {
+		return nil
 	}
-	m.ncPath, m.sidecar, m.sidecarMod, m.cards = pf.NC, pf.Sidecar, info.ModTime(), nil
-	buf, err := os.ReadFile(pf.Sidecar)
-	if err == nil {
-		m.cards, err = cnc.ParseCards(buf)
+	var out []pick
+	done := map[int]bool{}
+	for _, tt := range m.tree.UniqueTools() {
+		p := tt.Number
+		if done[p] {
+			continue
+		}
+		done[p] = true
+		if !m.tree.ConflictPocket(p) {
+			out = append(out, pick{tool: tt.CardTool})
+			continue
+		}
+		gi, skip := -1, ""
+		switch {
+		case m.runIdx >= 0:
+			gi = m.runIdx
+		case m.nextIdx >= 0:
+			gi = m.nextIdx
+		case m.lastRan == "":
+			for i, g := range m.tree.Groups {
+				if g.UsesPocket(p) {
+					gi = i
+					break
+				}
+			}
+		default:
+			skip = "the group that runs next is unknown"
+		}
+		pk := pick{tool: tt.CardTool, skip: skip}
+		if gi >= 0 {
+			pk.skip = "O" + m.tree.Groups[gi].Number + " does not list a tool for it"
+			for _, t := range m.tree.Groups[gi].Tools() {
+				if t.Number == p {
+					pk.tool, pk.skip = t, ""
+				}
+			}
+		}
+		out = append(out, pk)
 	}
-	if err != nil {
-		log.Printf("cncd: setup sheet %s: %s: %v", id, filepath.Base(pf.Sidecar), err)
-		m.cards = nil
-	}
+	return out
 }
 
 // geomLocked is what the machine shows for pocket: the last full dump,
@@ -474,19 +553,32 @@ func (m *setupMachine) recLocked(pocket int) *cnc.ManifestEntry {
 }
 
 func (s *SetupSheets) sheetLocked(m *setupMachine, tbl *cnc.ToolTable) cnc.SetupSheet {
-	return cnc.BuildSetupSheet(m.program, m.cards,
+	if m.program == "" {
+		return cnc.SetupSheet{State: cnc.SheetNone}
+	}
+	if m.tree == nil {
+		return cnc.SetupSheet{State: cnc.SheetNoJSON, Program: m.program}
+	}
+	return cnc.BuildTreeSheet(m.tree,
 		func(p int) *cnc.PocketGeom { return m.geomLocked(tbl, p) },
-		m.recLocked)
+		m.recLocked, cnc.RunPos{Running: m.runIdx, Next: m.nextIdx})
 }
 
-// nonOKLocked lists the program's pockets that are not ok.
+// nonOKLocked lists the pockets of every program in the tree that are not
+// ok (each pocket + tool once).
 func (s *SetupSheets) nonOKLocked(m *setupMachine, tbl *cnc.ToolTable) []int {
-	if m.cards == nil {
+	if m.tree == nil {
 		return nil
 	}
 	var out []int
-	for _, t := range m.cards.ProgramTools() {
+	seen := map[int]bool{}
+	for _, tt := range m.tree.UniqueTools() {
+		t := tt.CardTool
+		if seen[t.Number] {
+			continue
+		}
 		if cnc.PocketStatus(t, m.geomLocked(tbl, t.Number), m.recLocked(t.Number)) != cnc.StatusOK {
+			seen[t.Number] = true
 			out = append(out, t.Number)
 		}
 	}
@@ -498,12 +590,13 @@ func (s *SetupSheets) nonOKLocked(m *setupMachine, tbl *cnc.ToolTable) []int {
 // whose length changed since it was flagged, has been set up by the
 // operator: record the program's tool and the machine's length.
 func (s *SetupSheets) recordLocked(id string, m *setupMachine, tbl *cnc.ToolTable, now time.Time) {
-	if m.cards == nil {
+	if m.tree == nil {
 		return
 	}
 	inProgram := map[int]bool{}
 	dirty := false
-	for _, t := range m.cards.ProgramTools() {
+	for _, pk := range m.picksLocked() {
+		t := pk.tool
 		p := t.Number
 		inProgram[p] = true
 		if cnc.IsFixedPocket(p) {
@@ -513,6 +606,12 @@ func (s *SetupSheets) recordLocked(id string, m *setupMachine, tbl *cnc.ToolTabl
 		status := cnc.PocketStatus(t, g, m.recLocked(p))
 		before, flagged := m.baseline[p]
 		switch {
+		case pk.skip != "" && flagged && g != nil && (status == cnc.StatusOK || cnc.TouchedOff(t, *g, before)):
+			// a conflicted pocket was touched off but the group is unknown:
+			// keep it flagged until it can be recorded against one group
+			log.Printf("cncd: setup sheet %s: T%d touched off, not recorded: %s", id, p, pk.skip)
+		case pk.skip != "" && status == cnc.StatusOK && !flagged:
+			// nothing to record against
 		case status == cnc.StatusOK && !flagged && g != nil && cnc.RecordStale(t, lengthOf(g), m.recLocked(p)):
 			// touched off since the record: record the program's tool at the new length
 			l := lengthOf(g)

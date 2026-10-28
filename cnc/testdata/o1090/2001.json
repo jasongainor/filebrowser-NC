@@ -1,0 +1,70 @@
+{
+ "schema": "gmw-nc-cards/1",
+ "program": {
+  "name": "2001",
+  "comment": "angle mill",
+  "unit": "in"
+ },
+ "tools": [
+  {
+   "number": 2,
+   "description": "HIE, 1\" \u00d8 Indexable End Mill, 1\" Shank x 90\u00b0 Lead Angle x 3.937\" Overall Length, 3 Flute, TSC",
+   "type": "face mill",
+   "vendor": "HAAS",
+   "productId": "01-0157",
+   "diameter": 0.9999999999999998,
+   "cornerRadius": 0,
+   "taperAngle": 0,
+   "flutes": 3,
+   "fluteLength": 0.217,
+   "bodyLength": 1.7499999999999996,
+   "holder": "CAT40 SHELL MILL HOLDER",
+   "isDrill": false
+  },
+  {
+   "number": 14,
+   "description": "",
+   "type": "chamfer mill",
+   "vendor": "Haas",
+   "productId": "03-0620",
+   "diameter": 0.37499999999999994,
+   "cornerRadius": 0,
+   "taperAngle": 0.7853981633974483,
+   "flutes": 2,
+   "fluteLength": 0.7499999999999999,
+   "bodyLength": 1.4999999999999998,
+   "holder": "3/8\u201d Shrink Fit CAT40 end mill holder G3.15",
+   "isDrill": false
+  },
+  {
+   "number": 16,
+   "description": "0.089\" (#43) Drill  135\u00b0",
+   "type": "drill",
+   "vendor": "",
+   "productId": "",
+   "diameter": 0.08899999999999998,
+   "cornerRadius": 0,
+   "taperAngle": 2.356194490192345,
+   "flutes": 1,
+   "fluteLength": 0.44499999999999995,
+   "bodyLength": 0.545,
+   "holder": "CAT40 ER16",
+   "isDrill": true
+  },
+  {
+   "number": 12,
+   "description": "#4-40 Tap RH (0.112\")",
+   "type": "right hand tap",
+   "vendor": "",
+   "productId": "",
+   "diameter": 0.11199999999999999,
+   "cornerRadius": 0,
+   "taperAngle": 0,
+   "flutes": 2,
+   "fluteLength": 0.44799999999999995,
+   "bodyLength": 1.12,
+   "holder": "CAT40 ER16",
+   "isDrill": true
+  }
+ ]
+}

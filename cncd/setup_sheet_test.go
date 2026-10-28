@@ -138,13 +138,24 @@ func TestSetupSheetNoJSONAndNoProgram(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.step()
-	if s := r.sheets.Sheet("m1"); s.State != cnc.SheetNoJSON || s.Program != "31011" || len(s.Tools) != 0 {
+	// No sidecar: the pockets come from the NC's tool changes and are not
+	// size-checked (criterion 3), so the sheet still has tools.
+	if s := r.sheets.Sheet("m1"); s.State != cnc.SheetReady || s.Program != "31011" || len(s.Tools) != 2 ||
+		s.Tools[0].Status != cnc.StatusNoJSON || s.Groups[0].State != cnc.SheetNoJSON {
 		t.Fatalf("no sidecar: %+v", s)
 	}
 	r.src.program = "MDI" // MDI leaves the program in memory
 	r.step()
-	if s := r.sheets.Sheet("m1"); s.State != cnc.SheetNoJSON || s.Program != "31011" {
+	if s := r.sheets.Sheet("m1"); s.State != cnc.SheetReady || s.Program != "31011" {
 		t.Fatalf("MDI: %+v", s)
+	}
+	// An NC with no tool changes and no sidecar has nothing to list.
+	if err := os.WriteFile(filepath.Join(r.d.Root, "31011.nc"), []byte("%\nO31011 (BARE)\nG0 X0\nM30\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.step()
+	if s := r.sheets.Sheet("m1"); s.State != cnc.SheetNoJSON || len(s.Tools) != 0 {
+		t.Fatalf("bare nc: %+v", s)
 	}
 	r.src.program = "O99999" // not on disk
 	r.step()
@@ -503,7 +514,7 @@ func TestSetupSheetFolderAndQR(t *testing.T) {
 	if err := os.Remove(filepath.Join(folder, "31011 setup.html")); err != nil {
 		t.Fatal(err)
 	}
-	if qr := r.d.setupQR("31011", "h"); qr != nil {
+	if qr := r.d.setupQR("", "31011", "h"); qr != nil {
 		t.Fatalf("qr without a sheet: %+v", qr)
 	}
 	rec = httptest.NewRecorder()
@@ -517,5 +528,146 @@ func TestQRRowsPackMSBFirst(t *testing.T) {
 	got := qrRows([][]bool{{true, false, false, false, true}, {false, true, true, true, true}})
 	if got[0] != "88" || got[1] != "78" {
 		t.Fatalf("%v", got)
+	}
+}
+
+// treeRig is a rig whose loaded program O100 only calls O2001 and O2002,
+// which disagree about what T15 holds.
+func newTreeRig(t *testing.T) *setupRig {
+	r := newSetupRig(t)
+	root := r.d.Root
+	for _, f := range []string{"31011.nc", "31011.json"} {
+		_ = os.Remove(filepath.Join(root, f))
+	}
+	put := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("O100.nc", "%\nO00100 (MAIN)\nM98 P2001\nM00\nM98 P2002\nM00\nM30\n%\n")
+	put("2001.nc", "%\nO02001 (op1)\nT15 M6\n%\n")
+	put("2002.nc", "%\nO02002 (op2)\nT15 M6\n%\n")
+	side := func(tool string) string {
+		return `{"schema":"gmw-nc-cards/1","program":{"name":"x","comment":"c","unit":"in"},"tools":[` + tool + `]}`
+	}
+	put("2001.json", side(`{"number":15,"type":"drill","diameter":0.5,"description":"drill"}`))
+	put("2002.json", side(`{"number":15,"type":"flat end mill","diameter":0.375,"description":"mill"}`))
+	r.src.program = "O100"
+	return r
+}
+
+func (r *setupRig) recorded(pocket string) (cnc.ManifestEntry, bool) {
+	m, _, err := cnc.LoadManifest(filepath.Join(r.ttDir, cnc.ManifestFileName))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	e, ok := m[pocket]
+	return e, ok
+}
+
+func TestSetupSheetTreeGroupsAlertsAndRunning(t *testing.T) {
+	r := newTreeRig(t)
+	r.step()
+	s := r.sheets.Sheet("m1")
+	if s.State != cnc.SheetReady || s.Program != "100" || len(s.Groups) != 3 {
+		t.Fatalf("sheet %+v", s)
+	}
+	if len(s.Alerts) == 0 || s.Alerts[0].Kind != cnc.AlertConflict || s.Alerts[0].Pocket != 15 {
+		t.Fatalf("alerts %+v", s.Alerts)
+	}
+	r.src.program, r.src.busy = "O2001", true
+	r.step()
+	s = r.sheets.Sheet("m1")
+	if s.Program != "100" || !s.Groups[1].Running || s.Groups[2].Running {
+		t.Fatalf("running group: %+v", s.Groups)
+	}
+	r.src.program, r.src.busy = "O100", true // stopped at the M00 between calls
+	r.step()
+	s = r.sheets.Sheet("m1")
+	if s.Groups[1].Running || !s.Groups[2].Next {
+		t.Fatalf("next group: %+v", s.Groups)
+	}
+}
+
+// A touch-off at the M00 on a conflicted pocket is recorded against the
+// group that runs next.
+func TestSetupSheetConflictTouchOffRecordsNextGroup(t *testing.T) {
+	r := newTreeRig(t)
+	r.src.live[15] = [2]float64{8.4096, 0.3758}
+	r.step() // flagged
+	r.src.program, r.src.busy = "O2001", true
+	r.step()
+	r.src.program, r.src.busy = "O100", false
+	r.src.live[15] = [2]float64{9.5, 0.375} // operator touched off for O2002's mill
+	r.step()
+	e, ok := r.recorded("15")
+	if !ok || e.Type != "flat end mill" || e.LengthGeom != 9.5 {
+		t.Fatalf("manifest T15: %+v ok=%v", e, ok)
+	}
+}
+
+func TestSetupSheetConflictTouchOffSkippedWhenNextUnknown(t *testing.T) {
+	r := newTreeRig(t)
+	r.src.live[15] = [2]float64{8.4096, 0.3758}
+	r.step()                                  // flagged
+	r.src.program, r.src.busy = "O2002", true // the last group ran
+	r.step()
+	r.src.program, r.src.busy = "O100", false
+	r.src.live[15] = [2]float64{9.5, 0.375}
+	r.step()
+	if e, ok := r.recorded("15"); ok {
+		t.Fatalf("recorded with the next group unknown: %+v", e)
+	}
+	// Nothing seen running yet: the first group using the pocket.
+	r2 := newTreeRig(t)
+	r2.src.live[15] = [2]float64{8.4096, 0.3758}
+	r2.step()
+	r2.src.live[15] = [2]float64{9.5, 0.5}
+	r2.step()
+	if e, ok := r2.recorded("15"); !ok || e.Type != "drill" {
+		t.Fatalf("first group using the pocket: %+v ok=%v", e, ok)
+	}
+}
+
+func TestSetupSheetTreeRefreshOnSubprogramRepost(t *testing.T) {
+	r := newTreeRig(t)
+	r.step()
+	if n := len(r.sheets.Sheet("m1").Alerts); n == 0 {
+		t.Fatal("expected the T15 conflict")
+	}
+	body := `{"schema":"gmw-nc-cards/1","program":{"name":"x","comment":"c","unit":"in"},"tools":[{"number":15,"type":"drill","diameter":0.5,"description":"drill"}]}`
+	p := filepath.Join(r.d.Root, "2002.json")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(p, later, later); err != nil {
+		t.Fatal(err)
+	}
+	r.step()
+	for _, a := range r.sheets.Sheet("m1").Alerts {
+		if a.Kind == cnc.AlertConflict {
+			t.Fatalf("subprogram repost not picked up: %+v", a)
+		}
+	}
+}
+
+func TestSetupSheetTreeQRPointsAtFirstGroupWithSheet(t *testing.T) {
+	r := newTreeRig(t)
+	folder := filepath.Join(r.d.Root, "2001")
+	if err := os.Mkdir(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(folder, "sheet.html"), []byte("<h1>x</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.step()
+	s := r.sheets.Sheet("m1")
+	if s.QRProgram != "2001" {
+		t.Fatalf("QRProgram %q", s.QRProgram)
+	}
+	qr := r.d.setupQR(s.QRProgram, s.Program, "h")
+	if qr == nil || qr.URL != "http://h/setup/2001" {
+		t.Fatalf("qr %+v", qr)
 	}
 }

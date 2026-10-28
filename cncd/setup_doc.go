@@ -47,10 +47,16 @@ func (d Deps) setupDocHandler(w http.ResponseWriter, r *http.Request) {
 	http.StripPrefix(prefix, http.FileServer(http.Dir(pf.Folder))).ServeHTTP(w, r)
 }
 
-// setupQR is the QR for the loaded program's setup sheet, nil when the
-// program has no sheet. host is the address the display reached cncd on,
-// so the phone scanning it uses the same one.
-func (d Deps) setupQR(program, host string) *cnc.SheetQR {
+// setupQR is the QR for the setup sheet of the top-level program, nil when
+// it has none. A tree's QRProgram is the loaded program, or when that has
+// no sheet the first called program that does; fallback is the loaded
+// program for a sheet that carries none. host is the address the display
+// reached cncd on, so the phone scanning it uses the same one.
+func (d Deps) setupQR(qrProgram, fallback, host string) *cnc.SheetQR {
+	program := qrProgram
+	if program == "" {
+		program = fallback
+	}
 	pf, err := cnc.FindProgramFile(d.Root, program)
 	if err != nil || pf == nil || pf.Doc == "" || host == "" {
 		return nil
