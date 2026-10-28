@@ -2,7 +2,12 @@
 // cncd/setup_sheet.go). Included by main.cpp after fitToWidth(); it relies on
 // main.cpp's globals (display, cfg, payload_doc, current_page, logf).
 //
-// Pages, in order:
+// Pages, in order. When the payload has "groups" (a main program that calls
+// subprograms) the order is A, G..., T and the flat I/L pages are not built;
+// with no "groups" it is I, L, T exactly as before.
+//   'A'  ALERTS - cross-program alerts (absent when there are none)
+//   'G'  one program of the call tree: its tools, with state and call count,
+//        the running program marked
 //   'I'  FIX BEFORE RUN - only the pockets that are not ok (absent when all ok)
 //   'L'  the plain list: one line per pocket, run order, each once
 //        (I and L carry a QR to the program's setup sheet at the foot when
@@ -24,10 +29,11 @@
 #include <Fonts/FreeMonoBold24pt7b.h>
 
 struct SheetPage {
-  char kind;   // 'I', 'L' or 'T'
-  int id;      // chunk number for I/L, pocket number for T
-  int first;   // I/L: first row of the chunk; T: tool index
+  char kind;   // 'A', 'G', 'I', 'L' or 'T'
+  int id;      // chunk number for A/I/L, group*100+chunk for G, pocket for T
+  int first;   // A/G/I/L: first row of the chunk; T: tool index
   int count;   // rows on the page
+  int group;   // G: index into setup.groups; otherwise 0
 };
 
 static std::vector<SheetPage> sheet_pages;
@@ -46,6 +52,21 @@ inline bool statusIsOk(JsonObjectConst t) {
 bool sheetActive() {
   const char *st = payload_doc["setup"]["state"] | "none";
   return strcmp(st, "sheet") == 0;
+}
+
+inline JsonArrayConst setupGroups() {
+  return payload_doc["setup"]["groups"].as<JsonArrayConst>();
+}
+inline JsonArrayConst setupAlerts() {
+  return payload_doc["setup"]["alerts"].as<JsonArrayConst>();
+}
+inline bool hasGroups() {
+  JsonArrayConst g = setupGroups();
+  return !g.isNull() && g.size() > 0;
+}
+int setupAlertCount() {
+  JsonArrayConst a = setupAlerts();
+  return a.isNull() ? 0 : (int) a.size();
 }
 
 bool setupNoJson() {
@@ -115,7 +136,7 @@ void drawSheetQR() {
 }
 
 // Pack rows (only the not-ok ones when onlyBad) into pages by height.
-void packSheetPages(char kind, bool onlyBad, JsonArrayConst tools) {
+void packSheetPages(char kind, bool onlyBad, JsonArrayConst tools, int group = 0, int idBase = 0) {
   int avail = cfg.res_y - SHEET_ROWS_TOP - 6 - qrStripH();
   int pg = 0, first = 0, count = 0, used = 0, seen = 0;
   int n = tools.isNull() ? 0 : (int) tools.size();
@@ -124,7 +145,7 @@ void packSheetPages(char kind, bool onlyBad, JsonArrayConst tools) {
     if (onlyBad && statusIsOk(t)) continue;
     int h = rowHeight(t);
     if (count > 0 && used + h > avail) {
-      sheet_pages.push_back({kind, pg++, first, count});
+      sheet_pages.push_back({kind, idBase + pg++, first, count, group});
       first = seen;
       count = 0;
       used = 0;
@@ -133,7 +154,23 @@ void packSheetPages(char kind, bool onlyBad, JsonArrayConst tools) {
     count++;
     seen++;
   }
-  if (count > 0 || (!onlyBad && pg == 0)) sheet_pages.push_back({kind, pg, first, count});
+  if (count > 0 || (!onlyBad && pg == 0)) sheet_pages.push_back({kind, idBase + pg, first, count, group});
+}
+
+// An alert takes three lines: kind/pocket/programs, then the detail wrapped
+// to two. Fixed height so paging needs no text measuring.
+constexpr int ALERT_LINE_H = 18;
+constexpr int ALERT_ROW_H = 24 + 2 * ALERT_LINE_H + 10;
+
+void packAlertPages() {
+  int n = setupAlertCount();
+  if (n == 0) return;
+  int avail = cfg.res_y - SHEET_ROWS_TOP - 6 - qrStripH();
+  int per = avail / ALERT_ROW_H;
+  if (per < 1) per = 1;
+  for (int first = 0, pg = 0; first < n; first += per, pg++) {
+    sheet_pages.push_back({'A', pg, first, min(per, n - first), 0});
+  }
 }
 
 int sheetTotalPages() {
@@ -144,12 +181,20 @@ void buildSheetPages() {
   sheet_pages.clear();
   JsonArrayConst tools = payload_doc["setup"]["tools"];
   int n = tools.isNull() ? 0 : (int) tools.size();
-  packSheetPages('I', true, tools);
-  packSheetPages('L', false, tools);
+  packAlertPages();
+  if (hasGroups()) {
+    JsonArrayConst groups = setupGroups();
+    for (int g = 0; g < (int) groups.size(); g++) {
+      packSheetPages('G', false, groups[g]["tools"].as<JsonArrayConst>(), g, g * 100);
+    }
+  } else {
+    packSheetPages('I', true, tools);
+    packSheetPages('L', false, tools);
+  }
 
   for (int i = 0; i < n; i++) {
     int pocket = tools[i]["pocket"] | 0;
-    sheet_pages.push_back({'T', pocket, i, 1});
+    sheet_pages.push_back({'T', pocket, i, 1, 0});
   }
 }
 
@@ -252,18 +297,42 @@ void renderSheetList(const SheetPage &p) {
   JsonArrayConst tools = payload_doc["setup"]["tools"];
   const char *program = payload_doc["setup"]["program"] | "";
   const char *title = payload_doc["setup"]["title"] | "";
+  bool isGroup = (p.kind == 'G');
+  bool running = false, next = false;
+  String meta = "";
+  if (isGroup) {
+    JsonObjectConst g = setupGroups()[p.group].as<JsonObjectConst>();
+    tools = g["tools"].as<JsonArrayConst>();
+    program = g["program"] | "";
+    title = g["title"] | "";
+    running = g["running"] | false;
+    next = g["next"] | false;
+    meta = " " + String((const char *) (g["state"] | "")) + " x" + String((int) (g["calls"] | 0));
+  }
 
   display.setFont(&FreeMonoBold9pt7b);
   String head = (p.kind == 'I') ? "FIX BEFORE RUN   " : "";
-  head += "O" + String(program);
+  head += "O" + String(program) + meta;
   if (title[0]) head += "  " + String(title);
   // Column heads over the offsets, right of the title.
   const int status_w = 76;
   const int dia_w = 80, len_w = 80;
   int dia_x = cfg.res_x - margin - status_w - dia_w;
   int len_x = dia_x - len_w;
-  display.setCursor(margin, 50 + 4 + 16);
-  display.print(fitToWidth(head, len_x - margin - 8));
+  int head_x = margin;
+  if (running || next) {
+    // White on black tag ahead of the title: RUN (loaded and running) or NEXT.
+    const char *tag = running ? "RUN" : "NEXT";
+    int tw = (int) strlen(tag) * 11 + 8;
+    display.fillRect(margin, 50 + 4 + 2, tw, 18, GxEPD_BLACK);
+    display.setTextColor(GxEPD_WHITE);
+    display.setCursor(margin + 4, 50 + 4 + 16);
+    display.print(tag);
+    display.setTextColor(GxEPD_BLACK);
+    head_x = margin + tw + 6;
+  }
+  display.setCursor(head_x, 50 + 4 + 16);
+  display.print(fitToWidth(head, len_x - head_x - 8));
   display.setCursor(len_x, 50 + 4 + 16);
   display.print("LEN");
   display.setCursor(dia_x, 50 + 4 + 16);
@@ -338,6 +407,40 @@ void renderSheetList(const SheetPage &p) {
     display.drawLine(margin, y + row_h - 1, cfg.res_x - margin, y + row_h - 1, GxEPD_BLACK);
     y += row_h;
     drawn++;
+  }
+}
+
+// 'A' pages: cross-program alerts, three lines each.
+void renderSheetAlerts(const SheetPage &p) {
+  const int margin = 10;
+  JsonArrayConst alerts = setupAlerts();
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(margin, 50 + 4 + 16);
+  display.print("ALERTS  " + String(setupAlertCount()));
+  drawSheetQR();
+  int y = SHEET_ROWS_TOP;
+  for (int i = p.first; i < p.first + p.count && i < (int) alerts.size(); i++) {
+    JsonObjectConst a = alerts[i].as<JsonObjectConst>();
+    String line = String((const char *) (a["kind"] | ""));
+    int pocket = a["pocket"] | 0;
+    if (pocket > 0) line += "  T" + String(pocket);
+    JsonArrayConst progs = a["programs"].as<JsonArrayConst>();
+    if (!progs.isNull()) {
+      String ps = "";
+      for (JsonVariantConst pv : progs) {
+        if (ps.length()) ps += ",";
+        ps += "O" + String((const char *) (pv | ""));
+      }
+      if (ps.length()) line += "  " + ps;
+    }
+    display.setFont(&FreeMonoBold12pt7b);
+    display.setCursor(margin, y + 20);
+    display.print(fitToWidth(line, cfg.res_x - 2 * margin));
+    display.setFont(&FreeMono9pt7b);
+    drawWrapped(String((const char *) (a["detail"] | "")), margin, y + 20 + ALERT_LINE_H,
+                cfg.res_x - 2 * margin, ALERT_LINE_H, 2);
+    display.drawLine(margin, y + ALERT_ROW_H - 1, cfg.res_x - margin, y + ALERT_ROW_H - 1, GxEPD_BLACK);
+    y += ALERT_ROW_H;
   }
 }
 
@@ -427,5 +530,6 @@ void renderSheetPage() {
   if (sheet_pages.empty() || current_page < 0 || current_page >= (int) sheet_pages.size()) return;
   const SheetPage &p = sheet_pages[current_page];
   if (p.kind == 'T') renderSheetTool(p);
+  else if (p.kind == 'A') renderSheetAlerts(p);
   else renderSheetList(p);
 }
